@@ -143,7 +143,13 @@ namespace champ
                     dt = 0.02;
                 vel.linear.x =  ((1 - beta_) * ((x_sum * base_->gait_config.odom_scaler) / dt)) + (beta_ * prev_vel_.linear.x);
                 vel.linear.y =  ((1 - beta_) * ((y_sum * base_->gait_config.odom_scaler) / dt)) + (beta_ * prev_vel_.linear.y);
-                vel.angular.z = ((1- beta_ ) * (theta_sum / dt)) + (beta_ * prev_vel_.angular.z);
+                // theta_sum is a SUM of each contacting foot's rotation about the base,
+                // so without averaging the reported yaw rate scales with the number of
+                // feet in stance (measured 1.83x truth on the Go2's trot, 2026-07-26).
+                // x_sum/y_sum are already averaged, albeit by a hardcoded 2.0.
+                // total_contact was counted here and then never used.
+                const float contact_n = (total_contact > 0) ? float(total_contact) : 1.0f;
+                vel.angular.z = ((1- beta_ ) * ((theta_sum / contact_n) / dt)) + (beta_ * prev_vel_.angular.z);
                 
                 prev_vel_ = vel;
                 prev_time_ = now;
