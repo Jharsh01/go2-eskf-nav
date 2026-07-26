@@ -55,7 +55,7 @@ install(TARGETS ${PROJECT_NAME}_core
 install(TARGETS ${PROJECT_NAME}_node replay_eskf slip_infer
   DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
-install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
+install(DIRECTORY config launch worlds DESTINATION share/${PROJECT_NAME})
 install(PROGRAMS
   scripts/eskf_reference.py
   scripts/cross_validate.py
@@ -65,6 +65,7 @@ install(PROGRAMS
   scripts/metrics.py
   scripts/run_benchmark.py
   scripts/plot_trajectory.py
+  scripts/square_test.py
   DESTINATION lib/${PROJECT_NAME})
 
 # ---- Tests

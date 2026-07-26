@@ -1,0 +1,113 @@
+<?xml version="1.0" ?>
+<!--
+  flat.sdf — obstacle-free twin of unitree_go2_description/worlds/default.sdf.
+
+  Identical to the vendored default world (same GPS datum, physics, plugins, sun and
+  ground plane) with the five obstacle models REMOVED: box1 (5,0), box2 (-3,4),
+  box3 (0,-5), cylinder1 (3,3), cylinder2 (-4,-3). box1 in particular sits right on
+  the 10 m square path that square_test.py drives.
+
+  This is a clear floor for estimator work — the ESKF is measured against ground truth,
+  not against obstacle avoidance, so anything the robot can bump into only adds
+  disturbances that aren't part of what's being tested.
+
+  The obstacles are NOT deleted: they still live in the vendored default.sdf. Switch
+  between the two worlds with the launcher flag, no file editing:
+
+      ./run_go2_teleop.sh --square        # this world (no obstacles, default)
+      ./run_go2_teleop.sh --obstacles     # vendored default.sdf (obstacles back)
+
+  or directly:
+
+      ros2 launch unitree_go2_sim unitree_go2_launch.py \
+        world:=$(ros2 pkg prefix go2_eskf)/share/go2_eskf/worlds/flat.sdf
+
+  To add obstacles of your own, copy a <model> block out of default.sdf into this file.
+-->
+<sdf version="1.8">
+  <world name="default">
+    <!-- Geographic origin for GPS simulation — keep in sync with default.sdf, the
+         ESKF's lat/lon->ENU conversion anchors on this datum. -->
+    <spherical_coordinates>
+      <surface_model>EARTH_WGS84</surface_model>
+      <world_frame_orientation>ENU</world_frame_orientation>
+      <latitude_deg>30.0444</latitude_deg>
+      <longitude_deg>31.2357</longitude_deg>
+      <elevation>74.0</elevation>
+      <heading_deg>0</heading_deg>
+    </spherical_coordinates>
+
+    <physics name="1ms" type="bullet-featherstone">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <!-- Plugins -->
+    <plugin
+      filename="gz-sim-physics-system"
+      name="gz::sim::systems::Physics">
+    </plugin>
+    <plugin
+      filename="gz-sim-sensors-system"
+      name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <plugin
+      filename="gz-sim-user-commands-system"
+      name="gz::sim::systems::UserCommands">
+    </plugin>
+    <plugin
+      filename="gz-sim-scene-broadcaster-system"
+      name="gz::sim::systems::SceneBroadcaster">
+    </plugin>
+    <plugin
+      filename="gz-sim-navsat-system"
+      name="gz::sim::systems::NavSat">
+    </plugin>
+
+    <!-- Lights -->
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <!-- Ground Plane -->
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>100 100</size>
+            </plane>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>100 100</size>
+            </plane>
+          </geometry>
+          <material>
+            <ambient>0.8 0.8 0.8 1</ambient>
+            <diffuse>0.8 0.8 0.8 1</diffuse>
+            <specular>0.8 0.8 0.8 1</specular>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- No obstacle models here by design — see the header comment. -->
+  </world>
+</sdf>

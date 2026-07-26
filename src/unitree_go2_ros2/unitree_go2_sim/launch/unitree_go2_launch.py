@@ -210,16 +210,15 @@ def generate_launch_description():
     
     pkg_ros_gz_sim = get_package_share_directory('ros_gz_sim')
     
-    # Setup to launch the simulator and Gazebo world
+    # Setup to launch the simulator and Gazebo world.
+    # NOTE: this honours the declared `world` launch argument (it used to hardcode
+    # worlds/default.sdf, so `world:=...` was silently ignored). Default is unchanged
+    # — declare_gazebo_world defaults to unitree_go2_description/worlds/default.sdf.
     gz_sim = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(pkg_ros_gz_sim, 'launch', 'gz_sim.launch.py')),
         launch_arguments={
-            'gz_args': [PathJoinSubstitution([
-                unitree_go2_description,
-                'worlds',
-                'default.sdf'
-            ]), ' -r']  # Add -r flag to start unpaused
+            'gz_args': [LaunchConfiguration('world'), ' -r']  # Add -r flag to start unpaused
         }.items(),
     )
     
