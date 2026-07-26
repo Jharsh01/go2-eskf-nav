@@ -183,6 +183,21 @@ with a slip-adaptive measurement-covariance model. Replaces CHAMP's stock
   Odometry → use `ground_truth.launch.py`). With GPS off, position is unobservable and drifts
   slowly on leg odometry — that is expected in sim; the GPS path is validated by the replay /
   NumPy cross-checks, not the live sim.
+- **CHAMP's `/odom/raw` all-zero samples are a no-information flag, not a measurement —
+  and they occur only while the robot is STOPPED.** `champ::Odometry::getVelocities`
+  early-returns hard zeros for `linear.x`, `linear.y` *and* `angular.z` whenever all four
+  or zero feet are in contact. Measured: 0/23,000 samples while walking or turning;
+  standing yields unbroken 3–5 s runs. `eskf_node` gates them
+  (`leg_odom_gate_degenerate`) and treats a sustained run as a zero-velocity update
+  (`degenerate_hold_sec`); set `leg_odom_gate_degenerate: false` for the old
+  fuse-everything behaviour. `/odom/raw`'s **pose** is separately meaningless (a `vel_dt`
+  unit bug in `state_estimation.cpp`); only its twist is usable.
+- **The drift is a HEADING problem, and square results are NOT repeatable.** Across six
+  runs, position error tracks yaw error 1:1 (4°→2.3 m … 65°→12.7 m), but identical
+  configurations give anywhere from 4° to 97° of yaw error. **Never conclude from one
+  square run** — budget ~5+ runs per arm, and relaunch the sim per run (a `gz` world
+  reset wedges `controller_manager`). No filter change to date is proven to help. Read
+  `skills.md` §0 before touching the yaw path or quoting a drift number.
 - **Perception sensors (cameras + LiDARs) are DISABLED in the vendored model** — commented out
   in `unitree_go2_robot.xacro` (the 3 velodyne/4D-lidar/D455 includes) and `unitree_go2_gazebo.xacro`
   (the `rgb_camera` block). They are the only GPU-rendered sensors, so they (a) triggered a Gazebo

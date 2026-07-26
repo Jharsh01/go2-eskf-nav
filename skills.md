@@ -4,13 +4,379 @@ Working log of the go2_eskf ↔ Unitree Go2 sim integration debugging. Read this
 first when resuming — it captures hard-won findings that aren't obvious from the
 code. (Companion to `CLAUDE.md`; this file is the narrative + current state.)
 
-Last updated: 2026-07-26.
+Last updated: 2026-07-26 — see §0 "resume here". Current headline: square drift is NOT
+repeatable (4–97° yaw error for identical configs), so fixing the measurement comes before
+any further tuning; the drift itself is a HEADING problem, not position drift.
 
 ---
 
 ## 0. CURRENT STATE (start here)
 
-**LATEST (2026-07-26, first REAL square numbers):** two environment/infrastructure bugs
+**LATEST (2026-07-26 — NEGATIVE RESULT: square drift is not repeatable, so none of this
+session's filter changes can be shown to help. The durable finding is that drift is a
+HEADING problem. Resume here.)**
+
+A screenshot of a full 4-corner square run (final **5.945 m**, max 6.144 m — worse than
+the 2.172 m run below) started this. Read the HEADLINE section first; everything else in
+this entry is supporting detail.
+
+Session outcome in four lines:
+- One hypothesis (champ's all-zero leg-odom samples fused as measurements) was written up
+  confidently from a code read and then **disproved by the sim** (0.0% zeros while walking).
+- A real, reproducible turn-correlated defect WAS measured: the `correctGyroBias` input is
+  ~10x larger while turning. A gate for it was implemented; **its A/B is inconclusive.**
+- The deferred core `Q` convention bug was fixed (constraint lifted), cross-validated in
+  lockstep with the NumPy twin. **Also unproven** against the sim.
+- Six square runs proved the measurement method itself is too noisy to judge any of it.
+  **That is the main thing to fix before more tuning.**
+
+### HEADLINE: six square runs, three configs — RUN-TO-RUN VARIANCE DOMINATES
+
+**No filter change made here can be shown to help.** Every configuration produced one good
+run and one bad run; the within-config spread is far larger than any between-config
+difference. Do not tune further off single runs — and treat every drift number recorded
+earlier in this file (including the 2.172 m "baseline" and the 5.945 m screenshot) as one
+draw from a wide distribution, not a measurement of a configuration.
+
+| config | run 1 (yaw mean / pos max) | run 2 (yaw mean / pos max) |
+|---|---|---|
+| old Q, bias gate ON  | 9.4 deg / 2.14 m | 24.5 deg / 3.40 m |
+| old Q, bias gate OFF | 65.5 deg / 12.70 m | **4.3 deg / 2.32 m** |
+| new Q + gyro scale noise | 8.2 deg / 1.55 m | 34.9 deg / 7.08 m |
+
+Best single run overall: `newQ+scale` at **final 0.439 m (1.10% of 40 m), max 1.546 m** —
+but its sibling run was 7.045 m, so that number means nothing on its own.
+
+**What IS solid (consistent across all six runs): position error is a direct consequence of
+YAW error.** The two track each other 1:1 — 4.3 deg -> 2.3 m, 8.2 deg -> 1.6 m,
+24.5 deg -> 3.4 m, 34.9 deg -> 7.1 m, 65.5 deg -> 12.7 m. **Stop treating this as position
+drift; it is a heading problem, and any fix must be argued in degrees of yaw.**
+
+**b_g is never the culprit**: |b_g| <= 1.07e-2 rad/s in every run, because
+`Q(BG,BG) = sbg2*dt ~ 2e-10` keeps `P(BG)` and hence the bias gain tiny. The bias channel
+is effectively frozen — which is also why gating it changes little.
+
+**The real open question is now the VARIANCE, not the mean.** Identical configs give
+4-97 deg of yaw error. Note the probe's `wz_gyro/wz_truth` also swung **0.830 -> 0.964**
+between two runs — the yaw-rate scale error itself is not repeatable, which would explain
+non-repeatable heading error. Next step is sensor-level, not filter-level: find out why
+that ratio moves. Check whether `/ground_truth/odom`'s `twist.angular.z` is trustworthy
+(frame/derivation) before trusting the ratio at all; the yaw ERROR numbers above come from
+truth *pose* orientation and are solid regardless.
+
+**Statistical discipline for whoever picks this up:** ~5+ runs per arm minimum, report the
+distribution (median + spread), and prefer paired runs in one session. Each run costs
+~6.5 min wall clock (sim relaunch is mandatory — see the world-reset trap in §4).
+
+### MEASURED (two probe runs, n≈11,500 samples each — this is the ground truth)
+
+**The degenerate-zero hypothesis is WRONG while walking: 0.0% of `/odom/raw` samples are
+all-zero during either straight walking or turning.** The degenerate branch fires **only
+while stopped**, in unbroken runs of **3.1–5.0 s**. So:
+
+- Zeros are **not** the drift mechanism, and they do **not** explain why
+  `leg_odom_scale: 1.111` appears not to reach the estimate. That remains OPEN.
+- The speed under-read is just `odom_scaler`: `vx_leg/vx_truth` = **0.894 / 0.903** on
+  straight legs across the two runs — exactly the 0.9 already known.
+
+**What the measurement DID find — reproducible and turn-correlated.** The residual
+`eskf_node` feeds to `correctGyroBias`:
+
+| phase | run 1 | run 2 |
+|---|---|---|
+| STRAIGHT (`vx=0.25, wz=0`) | −0.0039 rad/s | −0.0057 rad/s |
+| TURN (`vx=0, wz=+0.4`)     | **+0.0452 rad/s** | **+0.0520 rad/s** |
+
+A gyro bias is a slowly-varying constant, so this residual must be ~equal in both phases
+(the probe's own docstring says so). It is **~10× larger while turning**, consistently. So
+`correctGyroBias` is injecting a **false bias of ~+0.05 rad/s (≈2.9°/s) only during
+turns**, at a tight `R=(0.05)²`. `predictImu` integrates `psi += (gyro_z − b_g)·dt`, so
+over a ~4 s corner that is **~10° of heading error per corner** — which is the shape seen
+in the screenshot (fine until a turn, then monotonic divergence) and the corner-correlated
+errors below. (This motivated the `|wz|` gate below; note the gate's A/B could not confirm
+it mattered, and `b_g` never grew enough for this mechanism to be the dominant one.)
+
+**Correction to the previous entry:** the table below records
+`gyro_wz − wz_leg (turning) = +0.042` under "after" and treats the turn residual as fixed.
+**It was not fixed — +0.042 *was already this bug*,** and it reproduces now at
++0.045/+0.052.
+
+Second turn-correlated error, also reproducible: `vx_leg/vx_truth` = **0.773 / 0.781 while
+turning** vs 0.894/0.903 straight — leg odometry under-reads translation ~13% more while
+rotating, which `leg_odom_scale` (a constant) cannot track.
+
+**Do not trust a single-run yaw ratio.** `wz_leg/wz_truth` measured 0.734 then 0.901, and
+`wz_gyro/wz_truth` 0.830 then 0.964 — too noisy to conclude from one run. The *residual*
+above is the stable statistic; use it.
+
+### The `|wz|` bias gate: IMPLEMENTED, and the A/B is INCONCLUSIVE
+
+`bias_update_max_wz: 0.10` now skips `correctGyroBias` while rotating. Four square runs,
+paired, same session, only that parameter changed:
+
+| run | final [m] | max [m] | mean [m] | yaw err mean / max [deg] | max abs b_g [rad/s] |
+|---|---|---|---|---|---|
+| gate ON  | 1.055 | 2.136 | 1.058 | 9.4 / 14.8 | 3.8e-3 |
+| gate ON  | 3.180 | 3.403 | 1.906 | 24.5 / 36.2 | 4.7e-3 |
+| gate OFF | 12.584 | 12.695 | 4.126 | 65.5 / 97.1 | 1.07e-2 |
+| gate OFF | **0.695** | 2.325 | 1.332 | **4.3 / 7.1** | 6.7e-3 |
+
+**Do not claim the gate fixes the drift.** The best run of the four is a gate-OFF run.
+n=2 per arm against this much gait variance establishes nothing; the gate does look like it
+reduces the b_g excursion (3.8–4.7e-3 with vs 6.7–10.7e-3 without) and the tail risk, but
+that needs many more runs to assert. Keep it — it is physically correct (a bias is only
+observable when not rotating) and cheap — but it is not the fix.
+
+### Leading hypothesis now: yaw runs OPEN-LOOP on a gyro with a turn-dependent scale error
+
+Two measured facts combine:
+1. `wz_gyro/wz_truth` measured **0.830 and 0.964** during turns — a 4–17% yaw-rate scale
+   error. Over four 90-degree corners (360 deg of rotation) that alone yields **14–61 deg**
+   of yaw error, which is the observed range.
+2. `Q(PSI,PSI) = sg2*dt^2` treats `gyro_noise` as a per-sample std although the config
+   documents these as continuous-time densities — **100x too small at dt=0.01**. So
+   `P(psi)` barely grows, and the filter effectively REFUSES the yaw information that leg
+   odometry does carry (`correctLegOdom`'s `H` has a real `PSI` column,
+   `eskf_core.cpp:129`, via the body-frame `vy` residual).
+
+i.e. the gyro scale error is the disturbance, and the over-confident `P(psi)` is why
+nothing corrects it.
+
+### CORE CHANGE SHIPPED (Q convention + gyro scale noise) — correct, but unproven
+
+The node-only constraint was lifted, so this was implemented in `eskf_core.cpp` and
+`eskf_reference.py` **in lockstep** (cross-validation re-passes at **2.498e-15**, 16/16
+GTest):
+
+1. **Q now uses the continuous-time convention throughout.** It was
+   `Q(v,v)=sa^2*dt^2`, `Q(psi,psi)=sg^2*dt^2` (per-SAMPLE) while `Q(b,b)=sbg^2*dt`
+   (density) — internally inconsistent, and 100x too small for psi at dt=0.01. Now
+   `sa^2*dt`, `sg^2*dt`, `sbg^2*dt`, plus the `p-v` cross-covariance blocks the
+   diagonal-only form omitted (standard discrete white-noise-acceleration model).
+   **`accel_noise` retuned 50.0 -> 5.0** so `Q(v,v)=sa^2*dt=0.25` per step is numerically
+   identical to the old value — velocity behaviour is deliberately unchanged, only psi
+   moves.
+2. **New `gyro_scale_noise` (default 0.10).** `Q(psi,psi) = (sg^2 + (0.1*wz)^2)*dt`, so
+   heading goes uncertain exactly while turning — modelling the measured 4-17% yaw-rate
+   scale error, which no white-noise term can represent. Set 0 for white-noise-only.
+
+**Both are defensible on first principles and neither is proven to help** (see the variance
+headline). They are kept because they are more correct, not because they measured better.
+
+### What WAS shipped, and what it is actually worth
+
+The degenerate-sample gate was implemented and kept — but **be honest about its value: it
+is nearly inert while walking** (0% of samples), so it is **not** a drift fix and no
+improvement should be claimed for it. What it does buy, on measurement:
+- The 3.1–5.0 s runs of standing zeros are now fused as a proper tight ZUPT
+  (`zupt_vel_noise: 0.02`) instead of at `R=(0.1)²` — a better anchor while idle, and the
+  cleanest gyro-bias observation available.
+- `degenerate_hold_sec: 0.3` separates the two classes with huge margin (walking: **no
+  degenerate runs at all**; stopped: 3.1–5.0 s), so the threshold is safe as-is.
+- It is insurance if gait params ever change to produce genuine flight phases.
+
+### The hypothesis that was DISPROVED (kept so it is not re-derived)
+
+`champ::Odometry::getVelocities` (`champ/include/champ/odometry/odometry.h:97-108`)
+early-returns **hard zeros for `linear.x`, `linear.y` AND `angular.z`** whenever
+`allFeetInContact()` or `noFootInContact()` — its "nothing to calculate" branch. With
+`state_estimation.cpp:148` calls `getVelocities` from a **fixed 50 Hz timer** and publishes
+the result straight into `/odom/raw`'s twist (`:189-195`). All of that is true, and those
+zeros genuinely are a no-information flag rather than a measurement.
+
+**The reasoning error** was inferring from `gait.yaml`'s `stance_duration: 0.25` that a
+trot spends much of each cycle with no foot planted. It does not: measurement shows
+`noFootInContact()` never fires while walking (0/23,000 samples), so `allFeetInContact()`
+while stopped is the only path that reaches the branch. `stance_duration` is not the duty
+factor that inference assumed. **Lesson: this file's own rule — measure before theorising —
+was skipped, and a code-read hypothesis got written up as a root cause.**
+
+Consequently both claimed mechanisms are void: velocity was never dragged toward zero while
+walking, and `correctGyroBias` was never fed `gyro_wz − 0`. The real bias corruption is the
+*magnitude* disagreement measured above, not a zero.
+
+### The gate as actually implemented (first-party, node-level; core untouched)
+
+`legOdomCallback` classifies each message before fusing. The subtlety: **a genuinely
+stationary robot also reports `(0,0,0)`** (all four feet planted), and there the zeros are
+real information — a ZUPT, and the best gyro-bias observation available. Gating all zeros
+would remove the zero-velocity anchor while standing and let velocity random-walk under
+`accel_noise: 50`. The discriminator is **duration**: a flight phase lasts a fraction of a
+gait cycle, standing produces an unbroken run. Hence `degenerate_hold_sec`.
+
+| sample | condition | action |
+|---|---|---|
+| non-degenerate | any | fuse as before |
+| `(0,0,0)` | zero-run ≥ `degenerate_hold_sec` and no fresh moving `cmd_vel` | fuse as a **ZUPT** (tight `zupt_vel_noise`) + fuse gyro bias |
+| `(0,0,0)` | otherwise | **skip** both `correctLegOdom` and `correctGyroBias` |
+
+`correctVerticalVel(0,·)` still runs on every message — it is what bounds `pz`.
+
+**Do NOT key this off `/cmd_vel` going quiet.** `teleop_twist_keyboard` publishes only on
+keypress, so a stale command does not mean a stopped robot; keying on staleness would fuse
+flight-phase zeros as a *tight* ZUPT while walking — worse than the original bug.
+`cmd_vel` is used only as a **veto** (a fresh command asking for motion rules out a ZUPT).
+
+`leg_odom_gate_degenerate: false` reproduces the old behaviour **exactly** (the ZUPT
+tightening is also gated on it), so it is a valid A/B baseline. Config is
+symlink-installed → no rebuild needed to flip it.
+
+### Next steps (in order) — all filter work is BLOCKED on step 1
+
+1. **Fix the measurement before tuning anything else.** Six runs showed 4–97° of yaw error
+   for identical configs, so a single square run carries almost no information. Either
+   run ~5+ per arm and compare distributions (≈6.5 min each, so ~35 min per arm), or
+   reduce the variance at the source. Until then, no tuning change can be evaluated and
+   any number quoted from one run is noise.
+2. **Chase the variance, which looks SENSOR-level, not filter-level.** `wz_gyro/wz_truth`
+   itself swung 0.830 → 0.964 between two probe runs. First check whether
+   `/ground_truth/odom`'s `twist.angular.z` is even trustworthy (frame convention /
+   derivation in the gz `OdometryPublisher`) — if it is not, every yaw-*rate* ratio in this
+   file is suspect. The yaw *error* numbers are safe: they come from truth pose orientation.
+3. Then re-evaluate the two unproven changes from this session (`bias_update_max_wz`,
+   `gyro_scale_noise`) with adequate n, and A/B them properly. Both default ON.
+4. Read-outs to use: `/eskf/gyro_bias` (new topic) and the `est_bg` CSV column for the bias
+   channel; `probe_leg_odom.py` for the STRAIGHT-vs-TURN residual, which should converge if
+   the bias gate is doing what it claims.
+5. Record the numbers here **whether or not they improve.**
+
+### State at handoff (git / build / artifacts)
+
+- **All green:** 16/16 GTest, C++≡NumPy **2.498e-15**, `metrics.py --selftest` and
+  `run_benchmark.py --demo` pass. Sim torn down, VRAM 3074/4096 MiB free.
+- **Branch** `fix/sim-readiness-guard-and-drift-baseline`, still 4 commits, **nothing from
+  this session committed.** Uncommitted: `CLAUDE.md`, `skills.md`,
+  `go2_eskf/{CMakeLists.txt, config/eskf_params.yaml, include/go2_eskf/eskf_core.hpp,
+  include/go2_eskf/eskf_node.hpp, src/eskf_core.cpp, src/eskf_node.cpp,
+  scripts/{eskf_reference.py, metrics.py, run_benchmark.py, square_test.py}}`,
+  vendored `champ/.../odometry.h`; untracked `go2_eskf/scripts/probe_leg_odom.py`.
+  **Commit `eskf_core.cpp` and `eskf_reference.py` together** — they are a lockstep pair
+  and `cross_validate.py` is the tripwire if they ever drift apart.
+- **The six run CSVs and the `full_run.sh` A/B harness were written to an ephemeral session
+  scratchpad and are GONE.** Only the aggregate numbers above survive. If per-sample
+  trajectories matter next time, log to a path inside the repo (or `~/`) via the node's
+  `log_path` parameter, and keep the harness in `src/go2_eskf/scripts/`. Rebuilding the
+  harness is ~20 lines; the recipe is in §7.
+
+### Still open / deliberately not done
+
+- ~~`Q(PSI,PSI) = sg2·dt²` convention bug~~ — **FIXED this session**, see "CORE CHANGE
+  SHIPPED" above. Left here as a pointer because it was listed as deferred for a while.
+- **No innovation (Mahalanobis) gating** on any correction. That is the general defence
+  against this whole bug class, but `S` is computed inside `EskfCore::josephUpdate`, so it
+  is a core change. Pair it with the `Q` fix.
+- **`contact_frac_` is dead** (`eskf_node.hpp`): never assigned, so the slip model's
+  `contact_frac` feature is a frozen 1.0. Needs a `/foot_contacts`
+  (`champ_msgs/ContactsStamped`) subscription — a first-party→vendored dependency — for a
+  model that is off by default. Marked with a comment at the declaration; left unfixed.
+- **CHAMP `vel_dt` bug:** `state_estimation.cpp:147` computes
+  `(current_time - last_vel_time_).nanoseconds()/1e-9`, i.e. ×1e9 instead of ×1e-9, so
+  **`/odom/raw`'s POSE is meaningless.** We consume only the twist, so the ESKF is
+  unaffected — but never trust that pose.
+- **Raising `stance_duration`** would shrink the degenerate window at the source, but it
+  is a vendored gait change that alters dynamics and risks the gait instability already
+  seen. Experiment, not a fix.
+
+Offline regressions after the change: **16/16 GTest**, C++≡NumPy **7.994e-15**,
+`metrics.py --selftest` and `run_benchmark.py --demo` pass. `metrics.py` now resolves CSV
+columns **by name from the header** (so the new `est_bg` column cannot silently shift
+which columns are read as ground truth, and pre-`est_bg` logs still load).
+
+---
+
+**Earlier (2026-07-26 late, yaw-error hunt — PARTIAL).**
+
+The sim pipeline works end-to-end and the square test completes all four corners.
+Two real sensor-level bugs were found by DIRECT MEASUREMENT against ground truth and
+fixed. **They did NOT fix the position error** — be honest about this when resuming.
+
+### Where the error stands (full 4-corner run, after both fixes)
+```
+CORNER 1/4  truth=(+9.75,+0.00)  eskf=( +8.55, +1.28)  err=1.756 m
+CORNER 2/4  truth=(+9.99,-9.75)  eskf=(+11.91, -6.33)  err=3.924 m
+CORNER 3/4  truth=(+0.25,-9.99)  eskf=( +4.05, -9.61)  err=3.816 m
+CORNER 4/4  truth=(+0.02,-0.25)  eskf=( -0.17, -2.41)  err=2.172 m
+final 2.172 m (5.43% of 40 m) · max 4.085 m · mean 2.431 m
+```
+vs BEFORE the fixes (run cut off at corner 3): 1.003 / 5.096 / 3.652 m.
+Corner 2 improved (5.10→3.92), corner 1 got WORSE (1.00→1.76), corner 3 unchanged.
+Peak error over the run dropped ~12.0 → 4.09 m. **Net: not solved.**
+
+### The two fixes (both verified by measurement, both keep)
+Measured with `ros2 run go2_eskf probe_leg_odom.py` (drives straight, then rotates in
+place, and prints leg/gyro/truth ratios per phase — the tool to re-run first tomorrow):
+
+| metric | before | after |
+|---|---|---|
+| `wz_leg / wz_truth`            | +1.832 | +1.023 |
+| `wz_gyro / wz_truth`           | +0.925 | +0.997 |
+| `gyro_wz - wz_leg` (straight)  | +0.030 | −0.003 |
+| `gyro_wz - wz_leg` (turning)   | **−0.255** | +0.042 |
+
+1. **`gyro_z_sign` reverted −1 → +1.** The raw sim IMU yaw rate ALREADY matches truth in
+   sign and magnitude (+0.925 during a commanded wz=+0.4 turn). The earlier "mirrored
+   heading" reading that motivated −1 was confounded by bug 2 below. With −1 the filter
+   turned the wrong way: invisible while wz≈0, ruinous at every corner.
+2. **CHAMP `theta_sum` now averaged by `total_contact`** (`champ/odometry.h`, 5th vendored
+   edit, §5.5). It was a raw SUM over stance feet, so reported yaw rate scaled with the
+   number of feet on the ground (1.83× truth on a trot). That poisoned `correctGyroBias`
+   with a false bias ONLY while turning — which is why straight legs looked fine.
+
+### The two residuals to chase tomorrow (NOT yet explained)
+1. **Yaw drifts on STRAIGHT legs.** At corner 1 the estimate is at y=+1.28 where truth is
+   y=0.00 — an ~8.5° heading error with no turn involved. Not turn-induced; bias or
+   initial alignment during ordinary walking.
+2. **Speed under-read ~11%, and `leg_odom_scale: 1.111` does not appear to reach the
+   estimate.** Estimated path length to corner 1 is 8.64 m vs 9.75 m truth; the 8.5°
+   heading error only accounts for ~1% of that. (An earlier note claiming heading
+   explained the shortfall was WRONG.)
+   **Leading hypothesis:** `gravity_lp` discards sustained horizontal accel, so the
+   PREDICT step pulls v toward zero; with a finite Kalman gain the estimate sits
+   systematically below the leg-odom measurement no matter what scale is applied to it.
+   **Next measurement (cheap, do this first):** log `/eskf/odom` twist.linear.x against
+   truth AND raw `/odom/raw` during steady straight walking. If the estimate sits below
+   BOTH, it is prediction-step drag → fix the gain/noise balance, not a scale factor.
+   The same lag mechanism would also explain residual turn spikes, so it is one test for
+   both residuals.
+
+### Slip model (Phase 3) — assessment before investing more
+**Do not expect significant improvement in THIS sim.** Reasons, all measured:
+- No slip exists: rigid no-slip floor; `vx_leg/vx_truth = 0.899` is exactly `odom_scaler`,
+  a known constant, not stochastic slip.
+- Its only lever is inflating `R_leg` so the filter leans on IMU+GPS — but GPS is off and
+  `gravity_lp` discards sustained horizontal accel, so **there is no better fallback**;
+  firing the slip model makes the estimate worse, not better. Benefit is structurally
+  capped near zero until the fallback path is fixed.
+- Its lead feature (commanded − measured body velocity) is contaminated: with feet
+  perfectly planted, cmd=0.25, truth=0.196, leg=0.177 → a persistent ~0.073 m/s
+  disagreement from gait tracking error + `odom_scaler`, with ZERO slip present. Trained
+  on sim data the MLP learns to fire when leg odometry is fine.
+- None of the measured errors are slip-shaped, so a slip model layered on now risks
+  ABSORBING them — apparent gain in-distribution, bad generalisation to hardware.
+- To make Phase 3 meaningful in sim: add low-friction patches (`<mu>0.1</mu>`) to
+  `go2_eskf/worlds/flat.sdf` to create real slip, AND fix the fallback path first.
+- Phase 3 remains a strong ENGINEERING artifact (PyTorch → Eigen MLP, C++≡NumPy 3e-16,
+  12 GTests). Fair to present as implemented+validated; not fair to claim accuracy gains.
+
+### Other state
+- **Robot fell mid-run once** at x=8.16 on a STRAIGHT leg (base z 0.225→0.162). CHAMP gait
+  instability in sim, unrelated to any of our changes (`champ::Odometry` is referenced
+  only by `state_estimation.cpp`; `quadruped_controller.cpp` never includes it).
+  `square_test.py` now distinguishes "never stood" from "fell mid-run" via `stood_once`
+  and ABORTS with a partial summary instead of idling. If falls become frequent, drop
+  `--speed` to ~0.2 (gait.yaml allows 0.3 but the sim is not robust at 0.25).
+- **Git:** branch `fix/sim-readiness-guard-and-drift-baseline` pushed with 3 commits; PR
+  not opened yet (`gh` is NOT installed — `sudo apt install -y gh` then `gh auth login`).
+  PR body draft was written but lives in a session scratchpad and is gone; regenerate.
+  **UNCOMMITTED:** `eskf_params.yaml` (gyro_z_sign), `square_test.py` (fall handling),
+  `champ/odometry.h` (theta_sum), `probe_leg_odom.py` + its CMakeLists entry. Commit these
+  as a follow-up WITHOUT claiming they fix the turning error — they do not.
+- **Before any sim run:** `nvidia-smi --query-gpu=memory.free --format=csv`. If CARLA is
+  up, `docker stop carla-server` (§2.6). The 4 GB card cannot host both.
+
+---
+
+**Earlier (2026-07-26, first REAL square numbers):** two environment/infrastructure bugs
 were masking the estimator entirely — neither was in go2_eskf. Both are fixed, and the
 square test now produces genuine drift measurements for the first time.
 
@@ -248,6 +614,34 @@ ros2 topic echo /odom/raw --field twist.twist.linear.x   # expect ~0.15 while wa
   honest readiness signal is `ros2 control list_controllers` reporting
   `joint_group_effort_controller ... active` (~37 s). Waiting on the topic instead lets
   every other node pile onto Gazebo's boot and starve the controller spawners (§2.7).
+- **CHAMP's `/odom/raw` zeros are a NO-INFORMATION FLAG, not a measurement** — but they
+  only occur **while the robot is STOPPED.** `getVelocities` early-returns hard zeros for
+  vx, vy AND wz whenever all four or zero feet are in contact. MEASURED 2026-07-26:
+  **0/23,000 samples are zero while walking or turning**; `noFootInContact()` never fires
+  on a trot, and standing (all four planted) produces unbroken runs of 3.1–5.0 s.
+  `stance_duration: 0.25` is **not** the duty factor — do not infer flight phases from it.
+  `eskf_node` gates them anyway (`leg_odom_gate_degenerate`) and treats a sustained run as
+  a ZUPT, which matters only while idle.
+- **`stance_duration: 0.25` does not mean a 25% stance duty factor.** A plausible-looking
+  chain of reasoning from that value to "half the gait cycle has no foot planted" was
+  written up as a root cause and then disproved by a 30-second probe run (§0). Measure.
+- **`gz service .../control --req 'reset: {all: true}'` WEDGES THE SIM — do not use it to
+  reset between A/B runs.** It rewinds `/clock`, after which `controller_manager`,
+  `/ground_truth/odom` and `ros2 control list_controllers` all stop responding and the
+  run is unrecoverable. **Relaunch the whole sim per run** (~60 s to controller-active,
+  ~6.5 min per square run including the drive). `full_run.sh` in the session scratchpad
+  did this; the pattern is: teardown -> launch sim + ground_truth -> poll
+  `ros2 control list_controllers` for `joint_group_effort_controller.*active` -> start a
+  FRESH `go2_eskf_node` (params and filter state clean) -> `square_test.py`.
+- **Square drift numbers are NOT repeatable.** Identical configs give 4-97 deg of yaw
+  error and 0.4-12.6 m of final position error. Never conclude from one run, and never
+  compare a new run against a single historical number. ~5+ runs per arm.
+- **`ros2 run go2_eskf go2_eskf_node --ros-args --params-file <yaml> -p k:=v`** overrides
+  any single parameter without editing the yaml — the clean way to A/B, since the node
+  name in `eskf_params.yaml` (`eskf_node`) matches the executable's default node name.
+- **`/odom/raw`'s POSE is meaningless** — `state_estimation.cpp:147` divides a nanosecond
+  count by `1e-9` instead of multiplying, so its dead-reckoned pose integrates with a
+  1e9-scaled dt. The twist is fine; the pose is not. (Vendored, unfixed — we don't use it.)
 - **A collapsed robot looks exactly like a broken estimator.** With no active leg
   controller the Go2 lies on its belly at base `z≈0.057` (standing ≈0.22, spawn 0.375) and
   ignores `/cmd_vel`. Always check base `z` before blaming the filter.
@@ -265,9 +659,9 @@ ros2 topic echo /odom/raw --field twist.twist.linear.x   # expect ~0.15 while wa
   `pkill -f gz-sim-server` matches NOTHING. The real names are `gz sim`, `gz sim server`,
   `gz sim gui`.
 
-## 5. Deliberate vendored edits (4)
+## 5. Deliberate vendored edits (5)
 
-The workspace prefers first-party changes, but four vendored edits are intentional:
+The workspace prefers first-party changes, but five vendored edits are intentional:
 1. **Ground-truth OdometryPublisher** in `unitree_go2_gazebo.xacro` (for benchmarking).
 2. **Perception sensors DISABLED** — commented out in `unitree_go2_robot.xacro` (the
    velodyne / 4D-lidar / D455 includes) and `unitree_go2_gazebo.xacro` (`rgb_camera`
@@ -284,6 +678,14 @@ The workspace prefers first-party changes, but four vendored edits are intention
    `world:=...` was silently ignored (same dead-arg pattern as `gui`, still unused). Now
    passes `LaunchConfiguration('world')`; the default is unchanged. This is what lets the
    obstacle-free world live in first-party `go2_eskf` instead of editing the vendored SDF.
+5. **CHAMP yaw rate averaged by stance count** — `champ/include/champ/odometry/odometry.h`
+   built `vel.angular.z` from `theta_sum`, a raw SUM of each contacting foot's rotation
+   about the base, with `total_contact` computed and then never used (`x_sum`/`y_sum` are
+   at least averaged, by a hardcoded 2.0). Reported yaw rate therefore scaled with the
+   number of feet in stance — measured **1.83× truth** on the Go2's trot. Now divided by
+   `total_contact`. Rebuild `champ` AND `champ_base` (header-only change, so champ_base
+   must be rebuilt to pick it up). Note the remaining unfixed sibling bug: `delta_theta`
+   has no angle wrapping, so a foot crossing the atan2 branch cut injects a 2π spike.
 
 ## 6. Files changed this session
 
@@ -307,6 +709,45 @@ The workspace prefers first-party changes, but four vendored edits are intention
   partial drift summary on interrupt, `ExternalShutdownException` handling
 - vendored: `unitree_go2_sim/launch/unitree_go2_launch.py` — honour the `world` arg (§5.4)
 
+**2026-07-26 late (uncommitted at handoff):**
+- `src/go2_eskf/config/eskf_params.yaml` — `gyro_z_sign` −1 → **+1** (measured; see §0)
+- `src/go2_eskf/scripts/probe_leg_odom.py` (new, installed) — drives straight then rotates
+  in place and prints `vx_leg/vx_truth`, `wz_leg/wz_truth`, `wz_gyro/wz_truth` and the
+  `gyro_wz − wz_leg` residual per phase. **Run this first when resuming**; it is how both
+  of today's bugs were found and how any yaw/scale claim should be checked.
+- `src/go2_eskf/scripts/square_test.py` — `stood_once` fall detection, abort-with-partial-
+  summary on a fall, `ExternalShutdownException` handling
+- vendored: `champ/include/champ/odometry/odometry.h` — average `theta_sum` (§5.5)
+
+**2026-07-26 (degenerate leg-odom gate — all first-party, core untouched):**
+- `src/go2_eskf/src/eskf_node.cpp` — classify/gate degenerate leg-odom samples in
+  `legOdomCallback`; new `looksGenuinelyStationary()`; `cmd_vel` subscribed
+  unconditionally (the gate's veto needs it, previously slip-model-only); publish
+  `/eskf/gyro_bias`; throttled degenerate-fraction + `b_g` log line; `est_bg` in the CSV
+- `src/go2_eskf/include/go2_eskf/eskf_node.hpp` — gate members/params, `R_zupt_`,
+  degenerate-run tracking, comment marking `contact_frac_` as never assigned
+- `src/go2_eskf/config/eskf_params.yaml` — `leg_odom_gate_degenerate`,
+  `degenerate_hold_sec`, `zupt_vel_noise`, `stationary_cmd_eps`, `cmd_vel_stale_sec`
+- `src/go2_eskf/scripts/probe_leg_odom.py` — degenerate-sample fraction, all-vs-valid
+  ratio buckets, `correctGyroBias` input per bucket, degenerate-run duration distribution
+- `src/go2_eskf/scripts/metrics.py` — resolve CSV columns BY NAME from the header (adding
+  a column can no longer shift ground truth; pre-`est_bg` logs still load); `est_bg` in
+  `LOG_COLUMNS`
+- `src/go2_eskf/scripts/run_benchmark.py` — emit the extra column in its synthetic logs
+
+**2026-07-26 (|wz| bias gate + core Q convention — node-only constraint lifted):**
+- `src/go2_eskf/src/eskf_node.cpp` / `include/go2_eskf/eskf_node.hpp` — `bias_update_max_wz`
+  gate on `correctGyroBias` (skip while rotating) + skipped-count in the throttled log;
+  declare `gyro_scale_noise`
+- **`src/go2_eskf/src/eskf_core.cpp` + `include/go2_eskf/eskf_core.hpp`** — Q switched to
+  the continuous-time convention (`sigma^2*dt`) with `p-v` cross terms; new
+  `Config::gyro_scale_noise` adding `(gyro_scale_noise*wz)^2` to `Q(psi,psi)`
+- **`src/go2_eskf/scripts/eskf_reference.py`** — same change, in lockstep (cross-validation
+  re-passes at 2.498e-15; if these two ever diverge, cross_validate.py is the tripwire)
+- `src/go2_eskf/config/eskf_params.yaml` — `bias_update_max_wz: 0.10`,
+  `gyro_scale_noise: 0.10`, **`accel_noise: 50.0 -> 5.0`** (compensates the dt^2 -> dt
+  convention change; velocity behaviour intentionally unchanged)
+
 ## 7. How to run / build / test
 
 ```bash
@@ -327,9 +768,46 @@ docker stop carla-server                          # docker start carla-server to
 ros2 topic echo /ground_truth/odom --once --field pose.pose.position  # z~0.22 ok, ~0.06 collapsed
 ros2 control list_controllers          # joint_group_effort_controller must be 'active'
 
+# Sensor-level truth check (straight phase + in-place rotation, prints ratios).
+# This is how the 1.83x leg yaw rate and the wrong gyro_z_sign were found — measure
+# before theorising. Needs the sim + ground_truth.launch.py up first.
+ros2 run go2_eskf probe_leg_odom.py
+
+# Rebuild after the CHAMP odometry edit (header-only -> champ_base must rebuild too):
+colcon build --packages-select champ champ_base go2_eskf --merge-install --symlink-install
+
+# --- A/B a single parameter (the ONLY sound way to evaluate a tuning change) ---
+# `run_go2_teleop.sh --square` opens gnome-terminals, so its output is awkward to
+# capture. For scripted A/B, drive the pieces directly and override one parameter:
+#
+#   1) teardown, then launch sim + ground truth, logging to files:
+#        ros2 launch unitree_go2_sim unitree_go2_launch.py use_sim_time:=true \
+#          rviz:=false world:=$PWD/install/share/go2_eskf/worlds/flat.sdf &
+#        ros2 launch go2_eskf ground_truth.launch.py &
+#   2) poll until the leg controller is ACTIVE (~25-30 s; the only honest signal):
+#        until ros2 control list_controllers | grep -q 'joint_group_effort_controller.*active'
+#   3) start a FRESH node (clean params AND filter state) with the override + a log:
+#        ros2 run go2_eskf go2_eskf_node --ros-args \
+#          --params-file install/share/go2_eskf/config/eskf_params.yaml \
+#          -p use_sim_time:=true -p ground_truth_topic:=/ground_truth/odom \
+#          -p log_path:=$HOME/ab_<label>.csv -p <param>:=<value> &
+#   4) ros2 run go2_eskf square_test.py --ros-args -p use_sim_time:=true
+#   5) RELAUNCH THE WHOLE SIM for the next run. Do NOT use the gz world-reset
+#      service to recycle it — it rewinds /clock and wedges controller_manager (§4).
+#
+# ~6.5 min per run. Budget 5+ runs per arm: identical configs give 4-97 deg of yaw
+# error, so fewer runs than that cannot distinguish anything (§0).
+#
+# Post-process (yaw error is the quantity that matters — position error follows it):
+#   python3 -c "import sys; sys.path.insert(0,'src/go2_eskf/scripts'); import metrics as M; \
+#     import numpy as np; L=M.load_log('ab_x.csv'); \
+#     print(np.degrees(np.abs(np.arctan2(np.sin(L['est_yaw']-L['gt_yaw']), \
+#                                        np.cos(L['est_yaw']-L['gt_yaw'])))).mean())"
+
 # Tests
 ./build/go2_eskf/test_eskf_core                       # 16 GTest
 python3 src/go2_eskf/scripts/cross_validate.py         # C++≡NumPy ~1e-14
+python3 src/go2_eskf/scripts/metrics.py --selftest     # metrics, no ROS/sim needed
 
 # Read before touching the filter: src/go2_eskf/docs/DESIGN.md
 ```
