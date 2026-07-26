@@ -1,0 +1,64 @@
+eskf_node:
+  ros__parameters:
+    use_sim_time: true
+
+    # --- Topics
+    imu_topic: "imu/data"
+    leg_odom_topic: "odom/raw"        # CHAMP leg odometry (body-frame twist)
+    gps_topic: "gps/fix"
+    ground_truth_topic: ""            # set to a nav_msgs/Odometry topic to log GT
+    output_odom_topic: "eskf/odom"
+
+    # --- Frames / TF
+    world_frame: "map"
+    base_frame: "base_link"
+    publish_tf: false                 # keep false to avoid clashing with the
+                                      # stock robot_localization TF tree
+
+    # --- Attitude / gravity handling
+    attitude_source: "gravity_lp"     # gravity_lp | accel | orientation
+    grav_lp_beta: 0.995               # gravity low-pass smoothing (closer to 1 = slower)
+    gyro_z_sign: -1.0                 # sim IMU is ~180deg flipped -> yaw rate is negated;
+                                      # -1 un-flips it so the estimate turns the right way. +1 for real IMU.
+    accel_clip: 5.0                   # clip motion-accel magnitude [m/s^2]. Tight: the
+                                      # sim's contact impacts spike to ~215 m/s^2; a walking
+                                      # base's true CoM accel is only a few m/s^2, so clip
+                                      # hard to reject spikes at the source.
+
+    # --- Sensor switches
+    # GPS OFF: the Gazebo navsat sensor emits ~0.5 deg (~55 km) of position noise
+    # (its <stddev>0.5</stddev> is applied in degrees, not metres — see
+    # docs/DESIGN.md), so fusing it wrecks the estimate. Enable only for a
+    # real/fixed GPS. Position then relies on leg odometry (bounded drift).
+    use_gps: false
+    max_imu_dt: 0.05                  # clamp dt across pauses/dropouts [s]
+
+    # --- IMU process noise (continuous-time std-devs)
+    # accel_noise must be BIG so the filter distrusts IMU-integrated velocity and
+    # leg odometry dominates. At 1.0 the leg-odom Kalman gain was ~0.06, so the
+    # estimate ignored leg odom and its position stayed frozen while walking. The
+    # sim IMU (215 m/s^2 contact spikes) genuinely warrants a large value.
+    accel_noise: 50.0                 # [m/s^2] large: leg odometry dominates velocity
+    gyro_noise: 0.002                 # [rad/s]
+    gyro_bias_noise: 0.0001           # [rad/s/sqrt(s)]
+
+    # --- Measurement noise (std-devs)
+    leg_odom_vel_noise: 0.1           # [m/s]  trust leg odom (it tracks truth to ~10%)
+    gps_pos_noise: 0.5                # [m]    ~u-blox horizontal
+    vz_zero_noise: 0.3                # [m/s]  vz≈0 vertical pseudo-measurement (allows bob)
+
+    # --- Phase 3: slip-adaptive leg covariance
+    use_slip_model: false             # true -> inflate R_leg by the slip score
+    slip_model_path: ""               # path to weights (config/slip_model.txt)
+    slip_lambda: 1.0                  # R_leg <- R_leg * (1 + lambda*slip)^2
+    cmd_vel_topic: "cmd_vel"          # commanded body twist (slip feature)
+    joint_states_topic: "joint_states"  # joint velocities (slip feature)
+
+    # --- Initial covariance (diagonal)
+    init_pos_cov: 1.0
+    init_vel_cov: 0.5
+    init_yaw_cov: 0.2
+    init_bias_cov: 0.001
+
+    # --- Benchmark logging ("" disables)
+    log_path: ""

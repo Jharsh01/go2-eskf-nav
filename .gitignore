@@ -1,0 +1,8 @@
+build/
+install/
+log/
+src.zip
+.git.bak/
+*.swp
+.vscode/
+__pycache__/

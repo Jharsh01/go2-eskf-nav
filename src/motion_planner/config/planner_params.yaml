@@ -1,0 +1,24 @@
+# planner_params.yaml
+# Tunable knobs for the navigation node. Override planner_type at runtime
+# to switch between astar / dijkstra / rrt / rrt_star / prm.
+navigation_node:
+  ros__parameters:
+    # ---- Active planner
+    planner_type: "astar"          # astar | dijkstra | rrt | rrt_star | prm
+
+    # ---- Map
+    map_resolution: 0.1            # meters per cell
+    map_width_m:    20.0
+    map_height_m:   20.0
+    robot_radius_m: 0.4           # used for obstacle inflation
+
+    # ---- Control / frames
+    control_rate_hz: 20.0
+    goal_frame:      "odom"
+
+    # ---- Pure Pursuit follower
+    pp.lookahead_m:   0.5
+    pp.max_v:         0.6
+    pp.max_omega:     1.5
+    pp.goal_tol_m:    0.20
+    pp.slow_radius_m: 1.0

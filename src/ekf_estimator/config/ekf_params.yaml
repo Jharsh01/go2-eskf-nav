@@ -1,0 +1,56 @@
+# ekf_params.yaml
+# Tunable parameters for the EKF estimator. Diagonal Q and R kept simple;
+# expand to full matrices if you need cross-correlation terms.
+ekf_estimator:
+  ros__parameters:
+    # ---- Frames
+    base_frame: "base_link"
+    odom_frame: "odom"
+    publish_tf: true
+
+    # ---- Prediction rate
+    predict_rate_hz: 50.0
+
+    # ---- Initial belief (matches robot spawn pose in obstacle_course.sdf).
+    # Setting these avoids a startup jump before the first pose correction.
+    initial_x:      7.0
+    initial_y:     -7.0
+    initial_theta:  0.0
+
+    # ---- Process noise Q (per second). These represent uncertainty in the
+    # motion model itself — start small for pose, larger for v/omega which
+    # are modelled as random-walk.
+    q_x:     1.0e-4
+    q_y:     1.0e-4
+    q_theta: 1.0e-4
+    q_v:     1.0e-2
+    q_omega: 1.0e-2
+
+    # ---- Measurement noise R (per measurement).
+    # Pull these from sensor datasheets where possible.
+    imu_yaw_rate_var:  1.0e-3      # (rad/s)^2  MPU6050 gyro Z noise; ~3e-4 typical
+    imu_yaw_rate_bias: 0.0         # rad/s; calibrate as the mean of gyro_z while
+                                   # the robot sits still for ~5 s, then write
+                                   # the negated mean here. MPU6050 bias is
+                                   # temperature-dependent — recalibrate after
+                                   # warm-up if drift in heading is observed.
+    odom_v_var:   1.0e-3           # (m/s)^2    wheel encoder linear vel
+    odom_w_var:   1.0e-3           # (rad/s)^2  wheel encoder angular vel
+    scan_xy_var:  5.0e-2           # (m)^2      scan-match position. Larger
+                                   # than for ground truth because scan-to-
+                                   # scan ICP integrates drift over time.
+    scan_yaw_var: 5.0e-2           # (rad)^2    scan-match heading
+    gt_xy_var:    1.0e-3           # (m)^2      ground-truth position from sim
+    gt_yaw_var:   1.0e-3           # (rad)^2    ground-truth heading from sim
+
+    # ---- Sensor toggles
+    # Sim runs with use_ground_truth=true to bound EKF drift during demos.
+    # Hardware MUST set this to false (the topic doesn't exist on a real bot).
+    use_ground_truth: true
+    use_scan_matching: true
+
+    # ---- Scan-matching tuning
+    scan_icp_max_iter: 15          # ICP iterations per scan
+    scan_icp_eps:      1.0e-4      # convergence threshold on |delta|
+    scan_subsample:    4           # keep every Nth scan return
+    scan_max_jump_m:   0.5         # reject deltas larger than this (outlier guard)

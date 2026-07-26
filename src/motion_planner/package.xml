@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>motion_planner</name>
+  <version>0.1.0</version>
+  <description>
+    Five classic motion planning algorithms (A*, Dijkstra, RRT, RRT*, PRM)
+    with a Pure Pursuit follower, demonstrated on a Gazebo Harmonic
+    differential-drive robot using EKF-fused localization.
+  </description>
+  <maintainer email="jharsh@umich.edu">Jayaprakash Harshavardhan</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>geometry_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_geometry_msgs</depend>
+
+  <!-- Runtime: simulator + bridge + the EKF -->
+  <exec_depend>ros_gz_sim</exec_depend>
+  <exec_depend>ros_gz_bridge</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>ekf_estimator</exec_depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

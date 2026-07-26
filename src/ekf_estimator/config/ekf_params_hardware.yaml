@@ -1,0 +1,54 @@
+# ekf_params_hardware.yaml
+# EKF tuning intended for a real diff-drive robot with:
+#   - MPU6050 IMU       (publishes sensor_msgs/Imu on /imu)
+#   - RPLiDAR A1/A2/S1  (publishes sensor_msgs/LaserScan on /scan)
+#   - Wheel encoders    (publishes nav_msgs/Odometry on /odom via
+#                        ros2_control diff_drive_controller or similar)
+#
+# Differences vs. ekf_params.yaml:
+#   - use_ground_truth: false   (no sim oracle on real hardware)
+#   - initial_xy/theta: 0       (real robots typically start at the world origin
+#                                 of their odom frame; set via /initialpose if
+#                                 you need otherwise)
+#   - Noise terms loosened to match real sensor noise floors. ICP variance
+#     in particular is larger because the real LiDAR and the actual world
+#     produce less clean correspondences than Gazebo's noiseless walls.
+ekf_estimator:
+  ros__parameters:
+    base_frame: "base_link"
+    odom_frame: "odom"
+    publish_tf: true
+    predict_rate_hz: 50.0
+
+    initial_x:      0.0
+    initial_y:      0.0
+    initial_theta:  0.0
+
+    q_x:     1.0e-4
+    q_y:     1.0e-4
+    q_theta: 1.0e-4
+    q_v:     2.0e-2
+    q_omega: 2.0e-2
+
+    # ---- MPU6050 (from datasheet rate-noise density ~0.005 rad/s/sqrt(Hz)
+    # at 100 Hz ODR; variance ~= (rate_noise)^2 = ~2.5e-5 rad/s; rounded up
+    # for vibration headroom).
+    imu_yaw_rate_var:  3.0e-4
+    imu_yaw_rate_bias: 0.0           # CALIBRATE: set to negated mean of gyro_z
+                                     # while the robot is stationary (see docs).
+
+    # ---- RPLiDAR ICP: more pessimistic than sim. The accumulator drifts.
+    scan_xy_var:  1.0e-1
+    scan_yaw_var: 1.0e-1
+
+    # ---- Encoders. Tune from a constant-speed test: stddev of (cmd_v - encoder_v).
+    odom_v_var:   2.0e-3
+    odom_w_var:   2.0e-3
+
+    use_ground_truth: false
+    use_scan_matching: true
+
+    scan_icp_max_iter: 15
+    scan_icp_eps:      1.0e-4
+    scan_subsample:    4
+    scan_max_jump_m:   0.5

@@ -1,0 +1,13 @@
+joint_state_broadcaster:
+  ros__parameters:
+    type: joint_state_broadcaster/JointStateBroadcaster
+    update_rate: 50  # Hz
+
+
+forward_position_controller:
+  ros__parameters:
+    type: forward_command_controller/ForwardCommandController
+    joints:
+      - $(var joint_prefix)1
+      - $(var joint_prefix)2
+    interface_name: position

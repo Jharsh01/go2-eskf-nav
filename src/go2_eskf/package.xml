@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>go2_eskf</name>
+  <version>0.1.0</version>
+  <description>
+    8-state error-state EKF (IMU + leg odometry + GPS) for Unitree Go2
+    localization, with a slip-adaptive measurement-covariance model.
+  </description>
+  <maintainer email="j.harsh011101@gmail.com">Harsh</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>eigen</depend>
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+
+  <!-- Ground-truth bridge for the Phase-4 benchmark (ground_truth.launch.py) -->
+  <exec_depend>ros_gz_bridge</exec_depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
