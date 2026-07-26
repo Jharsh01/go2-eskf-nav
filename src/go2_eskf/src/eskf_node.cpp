@@ -66,6 +66,15 @@ EskfNode::EskfNode() : rclcpp::Node("eskf_node") {
   // Std-dev of the vz≈0 vertical pseudo-measurement applied with each leg-odom
   // update (loose enough to permit the gait's vertical bob).
   vz_zero_noise_ = declare_parameter<double>("vz_zero_noise", 0.3);
+  // CHAMP multiplies its leg-odom velocities by gait.yaml's odom_scaler (0.9 in
+  // this sim) — a real-robot slip fudge that systematically under-reports speed
+  // by 10% on sim's no-slip floor (~1 m of drift per 10 m walked). This scale
+  // undoes it (1/0.9 ≈ 1.111). Set 1.0 when the source odometry is unscaled.
+  leg_odom_scale_ = declare_parameter<double>("leg_odom_scale", 1.0);
+  // Gyro-bias observability from leg yaw rate: z = gyro_wz - wz_leg = b_g + n.
+  use_leg_yaw_bias_ = declare_parameter<bool>("use_leg_yaw_bias", true);
+  const double byaw_std = declare_parameter<double>("leg_yaw_bias_noise", 0.05);
+  r_leg_yaw_bias_ = byaw_std * byaw_std;
 
   // --- Phase 3: slip-adaptive leg covariance
   use_slip_model_ = declare_parameter<bool>("use_slip_model", false);
@@ -206,15 +215,22 @@ void EskfNode::legOdomCallback(const nav_msgs::msg::Odometry::SharedPtr msg) {
       "velocity corrections are active.",
       msg->twist.twist.linear.x, msg->twist.twist.linear.y);
   if (!initialized_) return;
-  // CHAMP publishes body-frame velocity in the twist.
-  const double vx = msg->twist.twist.linear.x;
-  const double vy = msg->twist.twist.linear.y;
+  // CHAMP publishes body-frame velocity in the twist, pre-scaled by its
+  // odom_scaler fudge; leg_odom_scale_ undoes that so speed is unbiased.
+  const double vx = msg->twist.twist.linear.x * leg_odom_scale_;
+  const double vy = msg->twist.twist.linear.y * leg_odom_scale_;
   const Eigen::Vector2d v_body(vx, vy);
   eskf_->correctLegOdom(v_body, legCovarianceForUpdate(vx, vy));
   // A leg-odom message means the robot is walking on the ground, so anchor the
   // otherwise-unobservable vertical channel with vz≈0 (prevents pz drifting to
   // infinity when GPS is off). R is loose enough to allow the gait's vertical bob.
   eskf_->correctVerticalVel(0.0, vz_zero_noise_ * vz_zero_noise_);
+  // Leg yaw rate is bias-free, so (gyro - leg) observes the gyro bias directly —
+  // the main lever against long-horizon yaw drift with no absolute heading.
+  if (use_leg_yaw_bias_) {
+    const double wz_leg = msg->twist.twist.angular.z;
+    eskf_->correctGyroBias(gyro_wz_ - wz_leg, r_leg_yaw_bias_);
+  }
 }
 
 void EskfNode::cmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg) {

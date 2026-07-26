@@ -140,6 +140,17 @@ void EskfCore::correctGps(const Eigen::Vector2d& pos_xy,
   josephUpdate<2>(pos_xy - h, H, R);
 }
 
+void EskfCore::correctGyroBias(double bias_meas, double r) {
+  // h = b_g (state index BG); z = gyro_wz - wz_leg = b_g + noise.
+  Eigen::Matrix<double, 1, kStateDim> H =
+      Eigen::Matrix<double, 1, kStateDim>::Zero();
+  H(0, BG) = 1.0;
+  Eigen::Matrix<double, 1, 1> y, R;
+  y(0) = bias_meas - x_(BG);
+  R(0) = r;
+  josephUpdate<1>(y, H, R);
+}
+
 void EskfCore::correctVerticalVel(double vz_meas, double r) {
   // h = vz (world-frame vertical velocity), state index VX+2.
   Eigen::Matrix<double, 1, kStateDim> H =

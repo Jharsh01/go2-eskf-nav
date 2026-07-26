@@ -22,6 +22,12 @@
 #   ./run_go2_teleop.sh --plot             # + ground-truth bridge + live XY/error plot
 #   ./run_go2_teleop.sh --lite             # lowest load (no RViz, slower plot)
 #   ./run_go2_teleop.sh --software-render   # CPU (llvmpipe) rendering fallback
+#   ./run_go2_teleop.sh --obstacles        # bring the boxes/cylinders back
+#
+# World: defaults to the obstacle-free go2_eskf/worlds/flat.sdf (same GPS datum,
+# physics, lighting and ground plane as the vendored default.sdf, minus the five
+# obstacle models — box1 sat at (5,0), right on the 10 m square path). Nothing was
+# deleted: --obstacles selects the vendored default.sdf instead.
 #
 # Load: RViz is OFF by default (biggest easy saving on the RTX 3050). The plot is
 # throttled and, like the ground-truth bridge, niced + started only after the sim
@@ -50,14 +56,19 @@ WS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROS_SETUP="/opt/ros/jazzy/setup.bash"
 RVIZ="false"                                 # RViz is heavy on the RTX 3050 — opt in
 PLOT="false"
+SQUARE="false"                               # --square: autonomous drift test, no teleop
+OBSTACLES="false"                            # --obstacles: use the vendored world WITH boxes/cylinders
 RENDER="nvidia"                              # nvidia | software
 PLOT_INTERVAL="0.1"                          # plot redraw period [s] (10 Hz)
+PLOT_VIEW="10"                               # plot XY half-width [m] (13 for --square)
 
 for arg in "$@"; do
   case "$arg" in
     --rviz)             RVIZ="true" ;;
     --no-rviz)          RVIZ="false" ;;   # default; kept for compatibility
     --plot)             PLOT="true" ;;
+    --square)           SQUARE="true"; PLOT="true"; PLOT_VIEW="13" ;;  # autonomous square drift test
+    --obstacles)        OBSTACLES="true" ;;   # bring the boxes/cylinders back
     --software-render)  RENDER="software" ;;
     --light|--lite)     RVIZ="false"; PLOT_INTERVAL="0.2" ;;  # lowest load
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -77,6 +88,23 @@ command -v ionice >/dev/null 2>&1 || LOW_PRIO="nice -n 15"
 command -v gnome-terminal >/dev/null 2>&1 || {
   echo "ERROR: gnome-terminal not found." >&2; exit 1; }
 
+# --- world selection --------------------------------------------------------
+# Default is the FLAT world (first-party, go2_eskf/worlds/flat.sdf): same GPS datum,
+# physics, lighting and ground plane as the vendored default.sdf, minus the five
+# obstacle models. box1 sits at (5,0), right on the 10 m square path. The obstacles
+# aren't deleted — they're still in the vendored world; --obstacles selects it.
+FLAT_WORLD="$WS/install/share/go2_eskf/worlds/flat.sdf"
+OBSTACLE_WORLD="$WS/install/share/unitree_go2_description/worlds/default.sdf"
+if [[ "$OBSTACLES" == "true" ]]; then
+  WORLD="$OBSTACLE_WORLD";  WORLD_DESC="default.sdf (obstacles ON)"
+else
+  WORLD="$FLAT_WORLD";      WORLD_DESC="flat.sdf (obstacles OFF)"
+fi
+[[ -f "$WORLD" ]] || {
+  echo "ERROR: world not found: $WORLD" >&2
+  echo "       Build it first: colcon build --packages-select go2_eskf --merge-install --symlink-install" >&2
+  exit 1; }
+
 # --- GPU / offscreen-rendering env for Gazebo -----------------------------
 # Gazebo's sensor-rendering thread (Ogre2) makes an OFFSCREEN GL context separate
 # from the GUI. On an NVIDIA Optimus laptop it wrongly picks the Mesa/DRI2 path
@@ -95,6 +123,25 @@ else
 fi
 
 SOURCE_ENV="source '$ROS_SETUP' && source '$WS/install/setup.bash'"
+
+# --- readiness guard -------------------------------------------------------
+# The sim is only USABLE once ros2_control has ACTIVATED the leg controller.
+#
+# This used to wait for /odom/raw, which is useless: CHAMP's state_estimation_node
+# starts publishing /odom/raw (all zeros) ~2 s after launch, long before
+# controller_manager exists. So the guard fired instantly and the ESKF, ground-truth
+# bridge, plot and square test all piled onto Gazebo's boot — starving the
+# controller_manager that lives INSIDE the gz process. The spawners then failed with
+# "Failed to acquire lock in 20 seconds" / "waiting for service
+# /controller_manager/list_controllers", no controller held the legs, and the Go2
+# collapsed onto its belly (base z 0.375 -> 0.057) and never walked. The estimate
+# looked "frozen at the origin" — but the robot really was frozen.
+#
+# joint_group_effort_controller reporting `active` is the honest signal.
+WAIT_READY="echo 'Waiting for ros2_control to activate the leg controller (~30 s)...'; \
+  until timeout 5 ros2 control list_controllers 2>/dev/null \
+        | grep -q 'joint_group_effort_controller.*active'; do sleep 2; done; \
+  echo 'Leg controller ACTIVE — the Go2 is standing.'"
 LOGDIR="$(mktemp -d /tmp/go2_teleop.XXXXXX)"
 declare -a PIDS=()   # process-group leaders of everything we start in the bg
 
@@ -127,6 +174,7 @@ trap cleanup INT TERM
 
 echo "Workspace : $WS"
 echo "RViz      : $RVIZ    Plot: $PLOT (${PLOT_INTERVAL}s)    Rendering: $RENDER"
+echo "World     : $WORLD_DESC"
 echo "Logs      : $LOGDIR"
 echo
 
@@ -134,23 +182,21 @@ echo
 # Sim + controllers get FULL CPU priority; everything else is staggered behind
 # it and niced, so they don't pile onto Gazebo's boot (the load spike you saw).
 start_bg sim \
-  "$RENDER_ENV ros2 launch unitree_go2_sim unitree_go2_launch.py use_sim_time:=true rviz:=$RVIZ"
+  "$RENDER_ENV ros2 launch unitree_go2_sim unitree_go2_launch.py use_sim_time:=true rviz:=$RVIZ world:='$WORLD'"
 SIM_PID=$REPLY
 
 # --- 2. Ground-truth bridge (optional) — wait for the sim clock first ------
 if [[ "$PLOT" == "true" ]]; then
   start_bg ground_truth \
-    "until timeout 5 ros2 topic echo /clock --once >/dev/null 2>&1; do :; done; \
+    "$WAIT_READY; \
      exec $LOW_PRIO ros2 launch go2_eskf ground_truth.launch.py use_sim_time:=true"
   GT_PID=$REPLY
 fi
 
 # --- 3. Error-state EKF (waits for its inputs before starting) ------------
 start_bg eskf \
-  "echo 'Waiting for CHAMP leg odometry (/odom/raw)...'; \
-   until timeout 5 ros2 topic echo /odom/raw --once >/dev/null 2>&1; do \
-     echo '  ...still waiting for /odom/raw (sim controllers spawn ~30s in)'; done; \
-   echo 'Leg odometry is live. Starting ESKF (GPS OFF — the sim navsat is broken:'; \
+  "$WAIT_READY; \
+   echo 'Starting ESKF (GPS OFF — the sim navsat is broken:'; \
    echo '  ~0.5 deg / ~55 km position noise, which would wreck the estimate).'; \
    ros2 launch go2_eskf eskf.launch.py use_sim_time:=true use_gps:=false"
 ESKF_PID=$REPLY
@@ -161,8 +207,20 @@ if [[ "$PLOT" == "true" ]]; then
   start_bg plot \
     "until timeout 5 ros2 topic echo /eskf/odom --once >/dev/null 2>&1; do :; done; \
      exec $LOW_PRIO ros2 run go2_eskf plot_trajectory.py --ros-args \
-       -p use_sim_time:=true -- --interval $PLOT_INTERVAL"
+       -p use_sim_time:=true -- --interval $PLOT_INTERVAL --view $PLOT_VIEW"
   PLOT_PID=$REPLY
+fi
+
+# --- 5. Autonomous square drift test (optional, replaces teleop) -----------
+# Waits for the ESKF to publish AND a short gait warm-up, then drives a 10 m
+# square closed-loop on ground truth. All drift you see in the plot/summary is
+# estimator error, not driving error.
+if [[ "$SQUARE" == "true" ]]; then
+  start_bg square \
+    "until timeout 5 ros2 topic echo /eskf/odom --once >/dev/null 2>&1; do :; done; \
+     echo 'ESKF is up — 10 s gait warm-up before driving the square...'; sleep 10; \
+     ros2 run go2_eskf square_test.py --ros-args -p use_sim_time:=true"
+  SQUARE_PID=$REPLY
 fi
 
 # --- Open a viewer window per component -----------------------------------
@@ -182,15 +240,24 @@ show_log "Go2 Sim" sim "$SIM_PID"
 show_log "Go2 ESKF (watch for leg-odom/GPS arrival)" eskf "$ESKF_PID"
 [[ "$PLOT" == "true" ]] && show_log "Go2 Plot" plot "$PLOT_PID"
 
-# Teleop: live, interactive, its own window.
-gnome-terminal --title "TELEOP ← DRIVE HERE" -- \
-  bash -c "$SOURCE_ENV; echo 'DRIVE THE ROBOT HERE — keys: i/j/k/l and , (comma). Keep this window focused.'; echo; \
-           ros2 run teleop_twist_keyboard teleop_twist_keyboard" 2>/dev/null &
+if [[ "$SQUARE" == "true" ]]; then
+  # Autonomous square drives /cmd_vel — no teleop (they would fight).
+  show_log "SQUARE DRIFT TEST (watch corners + summary)" square "$SQUARE_PID"
+else
+  # Teleop: live, interactive, its own window.
+  gnome-terminal --title "TELEOP ← DRIVE HERE" -- \
+    bash -c "$SOURCE_ENV; echo 'DRIVE THE ROBOT HERE — keys: i/j/k/l and , (comma). Keep this window focused.'; echo; \
+             ros2 run teleop_twist_keyboard teleop_twist_keyboard" 2>/dev/null &
+fi
 
 echo "======================================================================"
-echo " Go2 stack launched (one window per component + a TELEOP window)."
-echo "   Sim | ${PLOT:+Ground Truth | }ESKF | ${PLOT:+Plot | }TELEOP"
-echo "   Drive from the TELEOP window (give it focus): i / j / k / l / , "
+if [[ "$SQUARE" == "true" ]]; then
+  echo " Go2 stack launched — AUTONOMOUS 10 m SQUARE drift test (no teleop)."
+  echo "   Watch the SQUARE window for per-corner errors and the final summary."
+else
+  echo " Go2 stack launched (one window per component + a TELEOP window)."
+  echo "   Drive from the TELEOP window (give it focus): i / j / k / l / , "
+fi
 echo
 echo " >>> Press Ctrl-C IN THIS SHELL to shut EVERYTHING down. <<<"
 echo "======================================================================"

@@ -4,13 +4,76 @@ Working log of the go2_eskf ↔ Unitree Go2 sim integration debugging. Read this
 first when resuming — it captures hard-won findings that aren't obvious from the
 code. (Companion to `CLAUDE.md`; this file is the narrative + current state.)
 
-Last updated: 2026-07-25.
+Last updated: 2026-07-26.
 
 ---
 
 ## 0. CURRENT STATE (start here)
 
-**LATEST (2026-07-25 eve):** leg odometry FIXED — the estimate now moves and tracks
+**LATEST (2026-07-26, first REAL square numbers):** two environment/infrastructure bugs
+were masking the estimator entirely — neither was in go2_eskf. Both are fixed, and the
+square test now produces genuine drift measurements for the first time.
+
+- **The robot wasn't walking — it was COLLAPSED.** `run_go2_teleop.sh` used `/odom/raw`
+  as its "sim is ready" guard, but CHAMP's `state_estimation_node` publishes `/odom/raw`
+  (all zeros) **~2 s** after launch, long before `controller_manager` exists. The guard
+  fired instantly, so ESKF + ground-truth bridge + plot + square test all piled onto
+  Gazebo's boot and starved the `controller_manager` that lives INSIDE the gz process.
+  Spawners failed (`Failed to acquire lock in 20 seconds`), no controller held the legs,
+  and the Go2 fell from its z=0.375 spawn to **z≈0.057** (belly on the floor, legs
+  splayed). `square_test.py` then commanded 0.25 m/s at a prone robot: truth frozen at
+  the origin, error flat at 1.5 cm. **This was previously misread as an ESKF bug** — the
+  filter was tracking a stationary robot correctly the whole time. It also explains the
+  intermittency: when the machine had spare CPU the controllers won the race and the
+  robot walked (the ~6 m teleop run); when they lost it, "frozen at origin" again.
+  **Fix:** `WAIT_READY` in the launcher waits for `ros2 control list_controllers` to
+  report `joint_group_effort_controller ... active` (~37 s), gating both the ESKF and the
+  ground-truth bridge; plus `square_test.py` now refuses to drive while base `z < 0.18`
+  (`STAND_Z`) and says why. See §2.7 / §4.
+- **FIRST REAL DRIFT NUMBERS** (clean run, 10 m square, GPS off, flat world):
+  ```
+  CORNER 1/4  truth=(+9.76,+0.00)  eskf=( +8.75, +0.02)  err=1.003 m
+  CORNER 2/4  truth=(+9.98,-9.75)  eskf=(+15.08, -9.65)  err=5.096 m
+  CORNER 3/4  truth=(+0.25,-9.99)  eskf=( +2.45,-12.90)  err=3.652 m
+  ```
+  Note the SHAPE: at corner 2 the estimate tracks **y** almost perfectly (−9.65 vs −9.75)
+  while **x** overshoots by 5.1 m — the estimate keeps advancing along +x through a turn
+  the filter under-registers. That is a heading/yaw-rate error, not isotropic drift, and
+  it is the live lead for `gyro_z_sign` and the slip model. (Corner 4 not reached: the
+  test run was capped at 200 s.)
+- **Gazebo GUI was segfaulting from VRAM exhaustion** — looked like a clean shutdown,
+  killed the whole sim. See §2.6. Check `nvidia-smi --query-gpu=memory.free` FIRST if the
+  sim dies seconds after start.
+- **Obstacles removed from the sim world** (new first-party `go2_eskf/worlds/flat.sdf`);
+  `box1` sat at (5,0), directly on the square path. Nothing deleted — `--obstacles`
+  selects the vendored `default.sdf`. Needed wiring the launch file's declared-but-unused
+  `world` arg (§5.4).
+- **Next step (unchanged):** slip model — but now on top of a baseline that actually moves.
+
+---
+
+**Earlier (2026-07-25 night, drift-minimization pass):** two systematic drift sources
+found and fixed, plus an autonomous square test replacing manual teleop:
+- **CHAMP `odom_scaler: 0.9`** (gait.yaml) scales leg-odom velocity by 0.9 — a real-robot
+  slip fudge that under-reports speed 10% on sim's no-slip floor (~1 m per 10 m; matches
+  the earlier 0.17-vs-0.19 leg/truth ratio). Compensated filter-side: `leg_odom_scale:
+  1.111` param in eskf_node (keeps vendored gait.yaml untouched).
+- **Gyro bias now strongly observable:** new `EskfCore::correctGyroBias` fuses
+  `z = gyro_wz − leg_odom.angular.z` (leg yaw rate is bias-free) → `h = b_g`. Params
+  `use_leg_yaw_bias: true`, `leg_yaw_bias_noise: 0.05`. Main lever against long-horizon
+  yaw drift without any absolute heading. (Leg angular.z was previously unused.)
+- **`square_test.py`** (new, installed): drives a 10 m square via /cmd_vel closed-loop on
+  GROUND TRUTH (true path = perfect square ⇒ plot gap = pure estimator drift). Respects
+  gait limits (v=0.25 ≤0.3, wz ≤0.4 ≤0.5). Prints per-corner truth/est/error + final
+  summary (final/max/mean error, % of 40 m). Launcher: `./run_go2_teleop.sh --square`
+  (implies plot+ground-truth, replaces teleop, widens plot view to ±13 m).
+- All still verified: 16/16 GTest, C++≡NumPy 8e-15. Yaw-sign fix (`gyro_z_sign=-1`) also
+  still pending live confirmation — the square run will confirm both at once.
+- **Next step (user-stated):** slip model on top of this baseline.
+
+---
+
+**Earlier (2026-07-25 eve):** leg odometry FIXED — the estimate now moves and tracks
 DISTANCE (~6 m, matched truth). New/last issue: **heading was mirrored in y** (estimate
 curved −y, truth +y). Diagnosed as the sim IMU's **negated yaw rate** (IMU ~180° flipped,
 DESIGN §6.1; gravity_lp fixes the accel but gyro-z is used directly). **Fix applied:**
@@ -112,6 +175,41 @@ ros2 topic echo /odom/raw --field twist.twist.linear.x   # expect ~0.15 while wa
 5. **Terminal UX.** gnome-terminal 3.52 can't reliably open multiple tabs in one
    window from the CLI → switched to separate windows + single-Ctrl-C teardown.
 
+6. **Gazebo GUI segfault from VRAM exhaustion — disguised as a clean shutdown.**
+   The whole sim died ~3 s after launch; `ros2 launch` printed
+   `[gazebo-1]: process has finished cleanly`, so it looked like a normal stop.
+   - **Chain:** the GUI's Ogre2 render target allocation fails when VRAM is exhausted,
+     Ogre doesn't check it, and it null-derefs in
+     `Ogre::ForwardClustered::collectLightForSlice` (via `GzRenderer::Render` in
+     `libMinimalScene.so`) on the FIRST rendered frame. The `gz` ruby wrapper then
+     SIGINTs the *server*, which exits 0 — hence "finished cleanly". `controller_manager`
+     dies with gz, so spawners hang on `/controller_manager/list_controllers` and both
+     `robot_localization` ekf_nodes abort with `exit code -6`.
+   - **Cause here:** a `carla-server` docker container (`carlasim/carla:0.9.15`,
+     restart=unless-stopped, RPC 2000) holding **2890 MiB of the 4096 MiB** RTX 3050,
+     leaving **94 MiB free**. Not a code regression: no package changed, and the NVIDIA
+     580.173.02 update predates the working runs.
+   - **Fix:** `docker stop carla-server` → free VRAM 94 MB → 3120 MB, GPU 100% → 1%.
+     Restart with `docker start carla-server`. The two cannot coexist on 4 GB.
+   - **NOT the fix:** `--software-render` / `LIBGL_ALWAYS_SOFTWARE=1` crashed too. This is
+     also NOT the Optimus *offscreen sensor* segfault of §2.1 — that's a different thread.
+
+7. **Robot collapsed on its belly → "estimate frozen at origin" (the big one).**
+   Full chain in §0. Root cause: the launcher's readiness guard waited on `/odom/raw`,
+   which CHAMP publishes (zeros) ~2 s after launch — useless as a signal. Everything
+   started during Gazebo's boot, starved `controller_manager`, spawners failed
+   (`Failed to acquire lock in 20 seconds`), legs went limp, base fell to z≈0.057.
+   - **Fix (launcher):** `WAIT_READY` waits for
+     `ros2 control list_controllers | grep 'joint_group_effort_controller.*active'`
+     (~37 s on this machine) before starting the ESKF or the ground-truth bridge.
+   - **Fix (test):** `square_test.py` holds `/cmd_vel` at zero while base `z < STAND_Z`
+     (0.18 m) and warns once with the exact diagnostic command, so a prone robot can
+     never again masquerade as estimator drift. It also prints a partial drift summary
+     on Ctrl-C/SIGTERM instead of an `RCLError` traceback.
+   - **Diagnosis recipe:** if the estimate looks frozen, check the ROBOT first —
+     `ros2 topic echo /ground_truth/odom --once --field pose.pose.position`. `z≈0.22`
+     = standing, `z≈0.06` = collapsed. Then `ros2 control list_controllers`.
+
 ## 3. Key architecture / behaviour facts
 
 - **ESKF pipeline** (`eskf_node.cpp` + `eskf_core.cpp`): state `x=[p(3),v(3),ψ,b_g]`.
@@ -145,11 +243,31 @@ ros2 topic echo /odom/raw --field twist.twist.linear.x   # expect ~0.15 while wa
 - The workspace install layout is **merged** → always build with `--merge-install`
   (plain `colcon build` errors on layout mismatch).
 - `ros2 topic hz` takes **one** topic at a time.
-- Sim controllers spawn ~20–30 s in; nodes that need `/odom/raw` must wait for it.
+- **`/odom/raw` existing does NOT mean the sim is ready.** CHAMP's `state_estimation_node`
+  publishes it (all zeros) ~2 s after launch, before `controller_manager` exists. The only
+  honest readiness signal is `ros2 control list_controllers` reporting
+  `joint_group_effort_controller ... active` (~37 s). Waiting on the topic instead lets
+  every other node pile onto Gazebo's boot and starve the controller spawners (§2.7).
+- **A collapsed robot looks exactly like a broken estimator.** With no active leg
+  controller the Go2 lies on its belly at base `z≈0.057` (standing ≈0.22, spawn 0.375) and
+  ignores `/cmd_vel`. Always check base `z` before blaming the filter.
+- **`[gazebo-1]: process has finished cleanly` can be a GUI CRASH.** The `gz` wrapper
+  SIGINTs the server when the GUI dies, and the server exits 0. The real evidence is in
+  `~/.gz/sim/log/<ts>/server_console.log`: `Received signal[2]` only *seconds* after
+  start = something killed it. `gz sim -s` (server) surviving while `gz sim -g` exits 139
+  isolates it to the GUI. Also: `nvidia-smi --query-gpu=memory.free` (§2.6).
+- Each gz run logs its world: `grep -ao "Loading SDF world file\[[^]]*\]"
+  ~/.gz/sim/log/<ts>/server_console.log` — settles "which world did that run use?".
+- **Killing a `ros2 launch` with SIGKILL ORPHANS its children** (gz, champ nodes, bridges),
+  which then fight the next run over `/world/default/...` topics and produce nonsense
+  (two robots answering one `/ground_truth/odom`, GUI rendering garbage). SIGINT the
+  launch parent and let it reap. Beware: no process is literally named `gz-sim-server` —
+  `pkill -f gz-sim-server` matches NOTHING. The real names are `gz sim`, `gz sim server`,
+  `gz sim gui`.
 
-## 5. Deliberate vendored edits (2)
+## 5. Deliberate vendored edits (4)
 
-The workspace prefers first-party changes, but three vendored edits are intentional:
+The workspace prefers first-party changes, but four vendored edits are intentional:
 1. **Ground-truth OdometryPublisher** in `unitree_go2_gazebo.xacro` (for benchmarking).
 2. **Perception sensors DISABLED** — commented out in `unitree_go2_robot.xacro` (the
    velodyne / 4D-lidar / D455 includes) and `unitree_go2_gazebo.xacro` (`rgb_camera`
@@ -161,6 +279,11 @@ The workspace prefers first-party changes, but three vendored edits are intentio
    (was False, twice); (b) removed the `&& !in_gazebo_` gate in `champ_base/src/
    quadruped_controller.cpp` (lines 84, 190) so `/foot_contacts` (gait-phase estimate)
    is published in sim. Rebuild `unitree_go2_sim` and `champ_base`.
+4. **`world` launch arg actually honoured** — `unitree_go2_sim/launch/unitree_go2_launch.py`
+   DECLARED a `world` argument but hardcoded `worlds/default.sdf` in `gz_args`, so
+   `world:=...` was silently ignored (same dead-arg pattern as `gui`, still unused). Now
+   passes `LaunchConfiguration('world')`; the default is unchanged. This is what lets the
+   obstacle-free world live in first-party `go2_eskf` instead of editing the vendored SDF.
 
 ## 6. Files changed this session
 
@@ -174,6 +297,16 @@ The workspace prefers first-party changes, but three vendored edits are intentio
 - vendored: `unitree_go2_robot.xacro`, `unitree_go2_gazebo.xacro` (perception disabled)
 - `CLAUDE.md` — GPS/navsat, NVIDIA render, perception-disabled notes
 
+**2026-07-26:**
+- `src/go2_eskf/worlds/flat.sdf` (new) — obstacle-free world; `CMakeLists.txt` installs
+  `worlds/`
+- `run_go2_teleop.sh` — `WAIT_READY` controller-active guard (replaces the useless
+  `/odom/raw` wait) on the ESKF + ground-truth bridge; `--obstacles` flag; world selection
+  + `World:` line in the banner
+- `src/go2_eskf/scripts/square_test.py` — `STAND_Z` refuse-to-drive-while-prone check,
+  partial drift summary on interrupt, `ExternalShutdownException` handling
+- vendored: `unitree_go2_sim/launch/unitree_go2_launch.py` — honour the `world` arg (§5.4)
+
 ## 7. How to run / build / test
 
 ```bash
@@ -181,8 +314,18 @@ The workspace prefers first-party changes, but three vendored edits are intentio
 colcon build --packages-select go2_eskf --merge-install --symlink-install
 source install/setup.bash
 
-# Run everything (crash-proof now; RViz off by default)
+# Run everything (RViz off by default; obstacle-free world by default)
 ./run_go2_teleop.sh --plot            # + --lite / --rviz / --software-render
+./run_go2_teleop.sh --square          # autonomous 10 m square drift test
+./run_go2_teleop.sh --square --obstacles   # ...with the boxes/cylinders back
+
+# BEFORE running the sim: free the GPU (4 GB card — CARLA and Gazebo can't share it)
+nvidia-smi --query-gpu=memory.free --format=csv   # <500 MB free => GUI will segfault
+docker stop carla-server                          # docker start carla-server to restore
+
+# If the estimate looks frozen, check the ROBOT before the filter:
+ros2 topic echo /ground_truth/odom --once --field pose.pose.position  # z~0.22 ok, ~0.06 collapsed
+ros2 control list_controllers          # joint_group_effort_controller must be 'active'
 
 # Tests
 ./build/go2_eskf/test_eskf_core                       # 16 GTest
