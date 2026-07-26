@@ -66,6 +66,7 @@ install(PROGRAMS
   scripts/run_benchmark.py
   scripts/plot_trajectory.py
   scripts/square_test.py
+  scripts/probe_leg_odom.py
   DESTINATION lib/${PROJECT_NAME})
 
 # ---- Tests

@@ -67,6 +67,7 @@ class SquareTest(Node):
         self.truth = None       # (x, y, yaw)
         self.truth_z = None     # base height [m], for the standing check
         self.prone_warned = False
+        self.stood_once = False  # distinguishes "never stood" from "fell mid-run"
         self.est = None         # (x, y)
         self.max_err = 0.0
         self.err_sum = 0.0
@@ -131,17 +132,29 @@ class SquareTest(Node):
 
         # Don't drive a robot that isn't on its feet — see STAND_Z.
         if self.truth_z is not None and self.truth_z < self.STAND_Z:
+            self.cmd_pub.publish(Twist())
+            if self.stood_once:
+                # It walked and then went down: a gait failure, not a setup problem.
+                # Abort rather than idle — the drift measurement is void from here,
+                # and a silent stall wastes the whole run.
+                self.get_logger().error(
+                    f"ROBOT FELL at truth=({self.truth[0]:+.2f},{self.truth[1]:+.2f}) "
+                    f"after {self.wp_i}/4 corners (base z={self.truth_z:.3f} m). "
+                    "This is a CHAMP gait failure in sim, not an estimator fault — "
+                    "drift numbers past this point are meaningless. Partial summary:")
+                self._finish()
+                return
             if not self.prone_warned:
                 self.get_logger().warn(
-                    f"Robot base is at z={self.truth_z:.3f} m (< {self.STAND_Z} m) — it is NOT "
-                    "standing, so /cmd_vel is held at zero. The leg controller most likely "
+                    f"Robot base is at z={self.truth_z:.3f} m (< {self.STAND_Z} m) and it has "
+                    "never stood, so /cmd_vel is held at zero. The leg controller most likely "
                     "never activated: check `ros2 control list_controllers` for "
                     "joint_group_effort_controller.")
                 self.prone_warned = True
-            self.cmd_pub.publish(Twist())
             return
+        self.stood_once = True
         if self.prone_warned:
-            self.get_logger().info("Robot is standing again — resuming the square.")
+            self.get_logger().info("Robot is standing now — starting the square.")
             self.prone_warned = False
 
         x, y, yaw = self.truth

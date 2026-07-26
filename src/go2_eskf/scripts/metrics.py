@@ -3,7 +3,10 @@
 
 Operates on the CSV the node writes when `log_path` is set:
 
-    t,est_x,est_y,est_z,est_yaw,est_vx,est_vy,gt_x,gt_y,gt_yaw
+    t,est_x,est_y,est_z,est_yaw,est_vx,est_vy,est_bg,gt_x,gt_y,gt_yaw
+
+Columns are resolved by NAME from the file's own header, so logs written before
+est_bg existed still load.
 
 Provides:
   * ATE  — Absolute Trajectory Error: RMSE of estimated vs ground-truth
@@ -22,26 +25,47 @@ import sys
 import numpy as np
 
 LOG_COLUMNS = ["t", "est_x", "est_y", "est_z", "est_yaw",
-               "est_vx", "est_vy", "gt_x", "gt_y", "gt_yaw"]
+               "est_vx", "est_vy", "est_bg", "gt_x", "gt_y", "gt_yaw"]
+
+
+def _column_index(path):
+    """Map column name -> index using the log's own header.
+
+    Reading the header rather than assuming LOG_COLUMNS' order means adding a
+    column to the node's log cannot silently shift which values get read as
+    ground truth. Falls back to LOG_COLUMNS for a headerless file.
+    """
+    with open(path) as f:
+        header = f.readline().strip().split(",")
+    names = [h.strip() for h in header]
+    if "gt_x" not in names:  # headerless / unrecognised: assume canonical order
+        names = LOG_COLUMNS
+    return {name: i for i, name in enumerate(names)}
 
 
 def load_log(path):
     """Load a node log; drop rows whose ground truth is nan (not yet received)."""
+    col = _column_index(path)
     rows = np.genfromtxt(path, delimiter=",", skip_header=1)
     if rows.ndim == 1:
         rows = rows[None, :]
-    gt = rows[:, 7:10]
-    keep = ~np.isnan(gt).any(axis=1)
+    gt_cols = [col["gt_x"], col["gt_y"], col["gt_yaw"]]
+    keep = ~np.isnan(rows[:, gt_cols]).any(axis=1)
     rows = rows[keep]
     if rows.shape[0] < 2:
         raise ValueError(f"{path}: fewer than 2 rows with valid ground truth")
-    return {
-        "t": rows[:, 0],
-        "est_xy": rows[:, 1:3],
-        "est_yaw": rows[:, 4],
-        "gt_xy": rows[:, 7:9],
-        "gt_yaw": rows[:, 9],
+    out = {
+        "t": rows[:, col["t"]],
+        "est_xy": rows[:, [col["est_x"], col["est_y"]]],
+        "est_yaw": rows[:, col["est_yaw"]],
+        "gt_xy": rows[:, [col["gt_x"], col["gt_y"]]],
+        "gt_yaw": rows[:, col["gt_yaw"]],
     }
+    # Gyro bias is absent from logs written before it was recorded; callers that
+    # want it should check for the key rather than assume it.
+    if "est_bg" in col and col["est_bg"] < rows.shape[1]:
+        out["est_bg"] = rows[:, col["est_bg"]]
+    return out
 
 
 def align_se2(src, dst):
