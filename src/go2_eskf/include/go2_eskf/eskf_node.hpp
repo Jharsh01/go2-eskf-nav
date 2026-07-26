@@ -41,6 +41,13 @@ class EskfNode : public rclcpp::Node {
   // (possibly inflated) leg-odometry covariance for this correction.
   Eigen::Matrix2d legCovarianceForUpdate(double leg_vx, double leg_vy);
 
+  // Distinguishes a genuine stop from champ's mid-gait "no information" leg-odom
+  // sample. Both look like (0,0,0), but they differ in DURATION: a flight phase
+  // lasts a fraction of a gait cycle, whereas standing still (all four feet
+  // planted) produces an unbroken run of zeros. `stamp` must come from the
+  // leg-odom header so the test uses one consistent clock.
+  bool looksGenuinelyStationary(const rclcpp::Time& stamp) const;
+
   void publishEstimate(const rclcpp::Time& stamp);
   void logRow(const rclcpp::Time& stamp);
 
@@ -82,10 +89,44 @@ class EskfNode : public rclcpp::Node {
   double max_imu_dt_ = 0.05;
   Eigen::Matrix2d R_leg_;
   Eigen::Matrix2d R_gps_;
+  Eigen::Matrix2d R_zupt_;      // tight R for a genuine zero-velocity update
   double vz_zero_noise_ = 0.3;  // std-dev of the vz≈0 vertical pseudo-measurement
   double leg_odom_scale_ = 1.0; // undoes CHAMP's odom_scaler velocity fudge
   bool use_leg_yaw_bias_ = true;   // observe gyro bias via (gyro_wz - leg wz)
   double r_leg_yaw_bias_ = 2.5e-3; // variance of that bias pseudo-measurement
+  // The bias pseudo-measurement is only valid when NOT rotating: wz_leg has a
+  // rotation-dependent scale error, so a turning residual is not bias. Measured
+  // ~-0.005 rad/s straight vs +0.045..+0.052 during a wz=0.4 turn. Above this
+  // |wz| the bias update is skipped. Set very large to disable the gate.
+  double bias_update_max_wz_ = 0.10;  // [rad/s]
+  uint64_t n_bias_skipped_ = 0;
+
+  // champ::Odometry::getVelocities early-returns hard zeros for vx, vy AND wz
+  // whenever all four or zero feet are in contact ("nothing to calculate"), and
+  // gait.yaml's stance_duration 0.25 makes that a large fraction of a trot. Those
+  // samples are a NO-INFORMATION flag, not a measurement: fusing them drags
+  // velocity toward zero (which no leg_odom_scale_ can undo, since it multiplies
+  // zero) and tells correctGyroBias that the entire gyro yaw rate is bias — worst
+  // exactly during turns. Gate them, but keep them when the robot is genuinely
+  // commanded to stand still, where (0,0,0) is real information (a ZUPT).
+  bool leg_odom_gate_degenerate_ = true;
+  // Standing still and a flight phase both report (0,0,0); they differ in how
+  // LONG the zeros persist. A trot's no-contact window is a fraction of a gait
+  // cycle, so an unbroken degenerate run past this threshold means the robot is
+  // genuinely stopped (all four feet planted) and the zeros are a real ZUPT.
+  // Deliberately not based on /cmd_vel freshness: teleop_twist_keyboard publishes
+  // only on keypress, so a stale command does NOT imply a stationary robot.
+  double degenerate_hold_sec_ = 0.3;
+  bool in_degenerate_run_ = false;
+  rclcpp::Time degenerate_run_start_;
+  // /cmd_vel is used only as a veto: a fresh command asking for motion rules out
+  // a ZUPT. It can never on its own promote zeros to a measurement.
+  double stationary_cmd_eps_ = 0.01;   // |cmd| below this => not commanding motion
+  double cmd_vel_stale_sec_ = 0.5;     // older than this => no opinion
+  bool have_cmd_vel_ = false;
+  rclcpp::Time last_cmd_vel_time_;
+  // Running tally so a run's degenerate fraction is visible in the node's log.
+  uint64_t n_leg_msgs_ = 0, n_leg_degenerate_ = 0, n_leg_skipped_ = 0;
 
   // Phase 3: slip-adaptive leg covariance. When use_slip_model_ is true, the
   // model maps the latest locomotion features to a slip score that inflates
@@ -100,6 +141,10 @@ class EskfNode : public rclcpp::Node {
   double gyro_wz_ = 0.0;                                // measured yaw rate
   double joint_vel_mean_ = 0.0, joint_vel_max_ = 0.0;   // joint velocity stats
   double accel_horiz_ = 0.0;                            // horizontal motion accel
+  // NOT WIRED UP: nothing assigns this, so the slip model's contact_frac feature
+  // is a frozen 1.0. Populating it needs a /foot_contacts
+  // (champ_msgs/ContactsStamped) subscription, i.e. a first-party -> vendored
+  // dependency, for a model that is off by default. Do not read it as live data.
   double contact_frac_ = 1.0;                           // feet-in-contact fraction
 
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
@@ -110,6 +155,9 @@ class EskfNode : public rclcpp::Node {
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr slip_pub_;
+  // b_g is the state that corrupts heading (predict integrates gyro_z - b_g), so
+  // publish it: a poisoned bias is invisible in a position-error plot.
+  rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr gyro_bias_pub_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 
   std::ofstream log_file_;

@@ -46,12 +46,15 @@ def drot_dyaw(roll, pitch, yaw):
 
 class EskfReference:
     def __init__(self, accel_noise=0.10, gyro_noise=2.0e-3,
-                 gyro_bias_noise=1.0e-4, p0=1e-3):
+                 gyro_bias_noise=1.0e-4, p0=1e-3, gyro_scale_noise=0.10):
         self.x = np.zeros(8)
         self.P = np.eye(8) * p0
         self.sa = accel_noise
         self.sg = gyro_noise
         self.sbg = gyro_bias_noise
+        # Fractional yaw-rate scale uncertainty; must match
+        # EskfCore::Config::gyro_scale_noise. See eskf_core.hpp for why.
+        self.sgs = gyro_scale_noise
 
     def predict_imu(self, accel_body, gyro_z, roll, pitch, dt):
         if dt <= 0.0:
@@ -75,11 +78,17 @@ class EskfReference:
         F[PX:PZ + 1, PSI] = 0.5 * da_dpsi * dt * dt
         F[PSI, BG] = -dt
 
+        # Continuous-time densities: every term integrates as sigma^2 * dt.
+        # Mirrors EskfCore::predictImu exactly — keep the two in lockstep or
+        # cross_validate.py will (correctly) fail.
         sa2, sg2, sbg2 = self.sa ** 2, self.sg ** 2, self.sbg ** 2
+        scale_sigma = self.sgs * gyro_z
         Q = np.zeros((8, 8))
-        Q[PX:PZ + 1, PX:PZ + 1] = np.eye(3) * (0.25 * sa2 * dt ** 4)
-        Q[VX:VZ + 1, VX:VZ + 1] = np.eye(3) * (sa2 * dt ** 2)
-        Q[PSI, PSI] = sg2 * dt ** 2
+        Q[PX:PZ + 1, PX:PZ + 1] = np.eye(3) * (sa2 * dt ** 3 / 3.0)
+        Q[PX:PZ + 1, VX:VZ + 1] = np.eye(3) * (sa2 * dt ** 2 / 2.0)
+        Q[VX:VZ + 1, PX:PZ + 1] = np.eye(3) * (sa2 * dt ** 2 / 2.0)
+        Q[VX:VZ + 1, VX:VZ + 1] = np.eye(3) * (sa2 * dt)
+        Q[PSI, PSI] = (sg2 + scale_sigma ** 2) * dt
         Q[BG, BG] = sbg2 * dt
 
         self.P = F @ self.P @ F.T + Q

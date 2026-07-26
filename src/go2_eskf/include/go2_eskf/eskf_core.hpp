@@ -33,6 +33,15 @@ class EskfCore {
     double accel_noise = 0.10;      // [m/s^2]   accelerometer white noise
     double gyro_noise = 2.0e-3;     // [rad/s]   yaw-rate white noise
     double gyro_bias_noise = 1.0e-4;// [rad/s/sqrt(s)] gyro-bias random walk
+    // Fractional yaw-rate SCALE uncertainty. The dominant yaw-rate error in the
+    // Go2 sim is not white noise but a scale error — wz_gyro/wz_truth measured
+    // 0.830 and 0.964 during turns (2026-07-26) — and integrating that
+    // open-loop is what produced 4-97 deg of heading error over a 10 m square.
+    // Q(psi,psi) therefore carries an extra (gyro_scale_noise * wz)^2 term, so
+    // heading becomes uncertain exactly while turning, which is when the error
+    // enters, letting leg odometry's body-frame vy residual pull yaw back.
+    // Set 0 for white-noise-only behaviour.
+    double gyro_scale_noise = 0.10;  // [-] fraction of |wz|
   };
 
   explicit EskfCore(const Config& cfg);

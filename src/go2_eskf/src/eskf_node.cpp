@@ -50,6 +50,7 @@ EskfNode::EskfNode() : rclcpp::Node("eskf_node") {
   cfg.accel_noise = declare_parameter<double>("accel_noise", 1.0);
   cfg.gyro_noise = declare_parameter<double>("gyro_noise", 2.0e-3);
   cfg.gyro_bias_noise = declare_parameter<double>("gyro_bias_noise", 1.0e-4);
+  cfg.gyro_scale_noise = declare_parameter<double>("gyro_scale_noise", 0.10);
   const double p_pos = declare_parameter<double>("init_pos_cov", 1.0);
   const double p_vel = declare_parameter<double>("init_vel_cov", 0.5);
   const double p_yaw = declare_parameter<double>("init_yaw_cov", 0.2);
@@ -63,6 +64,18 @@ EskfNode::EskfNode() : rclcpp::Node("eskf_node") {
   const double gps_std = declare_parameter<double>("gps_pos_noise", 0.5);
   R_leg_ = Eigen::Matrix2d::Identity() * (leg_std * leg_std);
   R_gps_ = Eigen::Matrix2d::Identity() * (gps_std * gps_std);
+  // Zero-velocity update: when the robot is genuinely commanded to stand still,
+  // leg odom's (0,0) is a real and very precise measurement, so trust it far more
+  // than a walking sample.
+  const double zupt_std = declare_parameter<double>("zupt_vel_noise", 0.02);
+  R_zupt_ = Eigen::Matrix2d::Identity() * (zupt_std * zupt_std);
+  // See the header for why champ's all-zero leg-odom samples must not be fused.
+  // Set false to restore the previous (fuse-everything) behaviour for an A/B run.
+  leg_odom_gate_degenerate_ =
+      declare_parameter<bool>("leg_odom_gate_degenerate", true);
+  degenerate_hold_sec_ = declare_parameter<double>("degenerate_hold_sec", 0.3);
+  stationary_cmd_eps_ = declare_parameter<double>("stationary_cmd_eps", 0.01);
+  cmd_vel_stale_sec_ = declare_parameter<double>("cmd_vel_stale_sec", 0.5);
   // Std-dev of the vz≈0 vertical pseudo-measurement applied with each leg-odom
   // update (loose enough to permit the gait's vertical bob).
   vz_zero_noise_ = declare_parameter<double>("vz_zero_noise", 0.3);
@@ -75,6 +88,9 @@ EskfNode::EskfNode() : rclcpp::Node("eskf_node") {
   use_leg_yaw_bias_ = declare_parameter<bool>("use_leg_yaw_bias", true);
   const double byaw_std = declare_parameter<double>("leg_yaw_bias_noise", 0.05);
   r_leg_yaw_bias_ = byaw_std * byaw_std;
+  // Only fuse the bias pseudo-measurement when barely rotating (see legOdomCallback).
+  // A huge value disables the gate, restoring the previous always-fuse behaviour.
+  bias_update_max_wz_ = declare_parameter<double>("bias_update_max_wz", 0.10);
 
   // --- Phase 3: slip-adaptive leg covariance
   use_slip_model_ = declare_parameter<bool>("use_slip_model", false);
@@ -118,23 +134,28 @@ EskfNode::EskfNode() : rclcpp::Node("eskf_node") {
         gt_topic, 10,
         std::bind(&EskfNode::groundTruthCallback, this, std::placeholders::_1));
   }
+  // Always needed: the degenerate-leg-odom gate uses the commanded twist to tell a
+  // genuine stop apart from a mid-gait "no information" sample. (It doubles as a
+  // slip-model feature.)
+  cmd_vel_sub_ = create_subscription<geometry_msgs::msg::Twist>(
+      cmd_vel_topic, 10,
+      std::bind(&EskfNode::cmdVelCallback, this, std::placeholders::_1));
   if (use_slip_model_) {
-    cmd_vel_sub_ = create_subscription<geometry_msgs::msg::Twist>(
-        cmd_vel_topic, 10,
-        std::bind(&EskfNode::cmdVelCallback, this, std::placeholders::_1));
     joint_state_sub_ = create_subscription<sensor_msgs::msg::JointState>(
         joint_topic, rclcpp::SensorDataQoS(),
         std::bind(&EskfNode::jointStateCallback, this, std::placeholders::_1));
     slip_pub_ = create_publisher<std_msgs::msg::Float64>("eskf/slip", 10);
   }
   odom_pub_ = create_publisher<nav_msgs::msg::Odometry>(out_topic, 10);
+  gyro_bias_pub_ = create_publisher<std_msgs::msg::Float64>("eskf/gyro_bias", 10);
   if (publish_tf_) {
     tf_broadcaster_ = std::make_unique<tf2_ros::TransformBroadcaster>(*this);
   }
 
   if (!log_path.empty()) {
     log_file_.open(log_path);
-    log_file_ << "t,est_x,est_y,est_z,est_yaw,est_vx,est_vy,gt_x,gt_y,gt_yaw\n";
+    log_file_ << "t,est_x,est_y,est_z,est_yaw,est_vx,est_vy,est_bg,"
+                 "gt_x,gt_y,gt_yaw\n";
     RCLCPP_INFO(get_logger(), "Logging estimate vs ground truth to %s",
                 log_path.c_str());
   }
@@ -215,28 +236,116 @@ void EskfNode::legOdomCallback(const nav_msgs::msg::Odometry::SharedPtr msg) {
       "velocity corrections are active.",
       msg->twist.twist.linear.x, msg->twist.twist.linear.y);
   if (!initialized_) return;
-  // CHAMP publishes body-frame velocity in the twist, pre-scaled by its
-  // odom_scaler fudge; leg_odom_scale_ undoes that so speed is unbiased.
-  const double vx = msg->twist.twist.linear.x * leg_odom_scale_;
-  const double vy = msg->twist.twist.linear.y * leg_odom_scale_;
-  const Eigen::Vector2d v_body(vx, vy);
-  eskf_->correctLegOdom(v_body, legCovarianceForUpdate(vx, vy));
-  // A leg-odom message means the robot is walking on the ground, so anchor the
-  // otherwise-unobservable vertical channel with vz≈0 (prevents pz drifting to
-  // infinity when GPS is off). R is loose enough to allow the gait's vertical bob.
-  eskf_->correctVerticalVel(0.0, vz_zero_noise_ * vz_zero_noise_);
-  // Leg yaw rate is bias-free, so (gyro - leg) observes the gyro bias directly —
-  // the main lever against long-horizon yaw drift with no absolute heading.
-  if (use_leg_yaw_bias_) {
-    const double wz_leg = msg->twist.twist.angular.z;
-    eskf_->correctGyroBias(gyro_wz_ - wz_leg, r_leg_yaw_bias_);
+  const double wz_leg = msg->twist.twist.angular.z;
+
+  // Classify the sample BEFORE leg_odom_scale_ is applied. champ writes literal
+  // zeros in its "nothing to calculate" branch (all four or zero feet in contact),
+  // so an exact comparison is the right test — this is a flag, not a small reading.
+  const bool degenerate = msg->twist.twist.linear.x == 0.0 &&
+                          msg->twist.twist.linear.y == 0.0 && wz_leg == 0.0;
+  ++n_leg_msgs_;
+  if (degenerate) ++n_leg_degenerate_;
+
+  // Track how long the current unbroken run of degenerate samples has lasted —
+  // that duration is what separates standing still from a flight phase.
+  const rclcpp::Time stamp(msg->header.stamp);
+  if (degenerate) {
+    if (!in_degenerate_run_) {
+      in_degenerate_run_ = true;
+      degenerate_run_start_ = stamp;
+    }
+  } else {
+    in_degenerate_run_ = false;
   }
+
+  // A degenerate sample carries information only if the robot really is still:
+  // then (0,0,0) is a genuine zero-velocity update, and a stationary robot is also
+  // the single best gyro-bias observation available. Mid-gait it means nothing, and
+  // fusing it corrupts both velocity and b_g.
+  const bool stationary = degenerate && looksGenuinelyStationary(stamp);
+  const bool skip = degenerate && leg_odom_gate_degenerate_ && !stationary;
+  // Tighten R only when the gate is enabled, so leg_odom_gate_degenerate:=false
+  // reproduces the previous behaviour exactly and stays a valid A/B baseline.
+  const bool zupt = degenerate && leg_odom_gate_degenerate_ && stationary;
+  if (skip) ++n_leg_skipped_;
+
+  // The vz≈0 anchor applies either way: it is what keeps the unobservable vertical
+  // channel from diverging (pz reached 1601 m without it), and vz_zero_noise_ is
+  // loose enough to tolerate both the gait's bob and a flight phase.
+  eskf_->correctVerticalVel(0.0, vz_zero_noise_ * vz_zero_noise_);
+
+  if (!skip) {
+    // CHAMP publishes body-frame velocity in the twist, pre-scaled by its
+    // odom_scaler fudge; leg_odom_scale_ undoes that so speed is unbiased. (Note
+    // it cannot undo a degenerate zero — scaling zero gives zero, which is why
+    // gating matters more than the scale factor.)
+    const double vx = msg->twist.twist.linear.x * leg_odom_scale_;
+    const double vy = msg->twist.twist.linear.y * leg_odom_scale_;
+    const Eigen::Vector2d v_body(vx, vy);
+    const Eigen::Matrix2d R = zupt ? R_zupt_ : legCovarianceForUpdate(vx, vy);
+    eskf_->correctLegOdom(v_body, R);
+    // Leg yaw rate is bias-free, so (gyro - leg) observes the gyro bias directly —
+    // the main lever against long-horizon yaw drift with no absolute heading.
+    //
+    // BUT only while the robot is NOT rotating. MEASURED 2026-07-26: the residual
+    // (gyro_wz - wz_leg) is ~-0.005 rad/s walking straight but +0.045..+0.052 rad/s
+    // during a wz=+0.4 turn, reproducibly — because wz_leg carries a
+    // rotation-dependent scale error (wz_leg/wz_truth and vx_leg/vx_truth both drop
+    // while turning). A gyro bias is a slowly-varying constant, so a residual that
+    // tracks |wz| is not bias: fusing it injects ~+0.05 rad/s (~2.9 deg/s) of FALSE
+    // bias at every corner, and predict then integrates psi += (gyro_z - b_g)*dt.
+    // Over a ~4 s corner that is ~10 deg of heading error per corner.
+    if (use_leg_yaw_bias_) {
+      const double wz_mag = std::max(std::abs(gyro_wz_), std::abs(wz_leg));
+      if (wz_mag <= bias_update_max_wz_) {
+        eskf_->correctGyroBias(gyro_wz_ - wz_leg, r_leg_yaw_bias_);
+      } else {
+        ++n_bias_skipped_;
+      }
+    }
+  }
+
+  // Surface the two quantities that made this bug hard to see: how much of the leg
+  // odometry is no-information, and where the gyro bias has ended up.
+  RCLCPP_INFO_THROTTLE(
+      get_logger(), *get_clock(), 10000,
+      "leg odom: %lu msgs, %.1f%% degenerate (all-zero), %lu skipped, "
+      "%lu bias updates skipped while turning | b_g=%+.5f rad/s",
+      static_cast<unsigned long>(n_leg_msgs_),
+      100.0 * static_cast<double>(n_leg_degenerate_) /
+          static_cast<double>(n_leg_msgs_),
+      static_cast<unsigned long>(n_leg_skipped_),
+      static_cast<unsigned long>(n_bias_skipped_), eskf_->state()(BG));
+}
+
+bool EskfNode::looksGenuinelyStationary(const rclcpp::Time& stamp) const {
+  // Primary test: the zeros have persisted longer than any gait flight phase.
+  if (!in_degenerate_run_) return false;
+  if ((stamp - degenerate_run_start_).seconds() < degenerate_hold_sec_) {
+    return false;
+  }
+  // Veto: a FRESH command asking for motion contradicts "stopped", so stay
+  // conservative and treat the sample as no-information instead of a ZUPT. A
+  // stale command expresses no opinion either way (teleop only publishes on
+  // keypress), so it cannot veto.
+  if (have_cmd_vel_ &&
+      (stamp - last_cmd_vel_time_).seconds() <= cmd_vel_stale_sec_) {
+    const bool commanding_motion = std::abs(cmd_vx_) >= stationary_cmd_eps_ ||
+                                   std::abs(cmd_vy_) >= stationary_cmd_eps_ ||
+                                   std::abs(cmd_wz_) >= stationary_cmd_eps_;
+    if (commanding_motion) return false;
+  }
+  return true;
 }
 
 void EskfNode::cmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg) {
   cmd_vx_ = msg->linear.x;
   cmd_vy_ = msg->linear.y;
   cmd_wz_ = msg->angular.z;
+  // Twist is unstamped, so timestamp arrival ourselves; this clock follows
+  // use_sim_time, matching the leg-odom header stamps the gate compares against.
+  last_cmd_vel_time_ = now();
+  have_cmd_vel_ = true;
 }
 
 void EskfNode::jointStateCallback(
@@ -357,6 +466,12 @@ void EskfNode::publishEstimate(const rclcpp::Time& stamp) {
   odom.twist.covariance[7] = P(VY, VY);
   odom_pub_->publish(odom);
 
+  // b_g drives yaw integration (predict uses gyro_z - b_g), so a corrupted bias
+  // shows up as heading error long before anything else reveals it.
+  std_msgs::msg::Float64 bias_msg;
+  bias_msg.data = x(BG);
+  gyro_bias_pub_->publish(bias_msg);
+
   if (publish_tf_) {
     geometry_msgs::msg::TransformStamped tf;
     tf.header.stamp = stamp;
@@ -374,7 +489,8 @@ void EskfNode::logRow(const rclcpp::Time& stamp) {
   if (!log_file_.is_open()) return;
   const Vec8& x = eskf_->state();
   log_file_ << stamp.seconds() << ',' << x(PX) << ',' << x(PY) << ',' << x(PZ)
-            << ',' << x(PSI) << ',' << x(VX) << ',' << x(VY) << ',';
+            << ',' << x(PSI) << ',' << x(VX) << ',' << x(VY) << ',' << x(BG)
+            << ',';
   if (have_gt_)
     log_file_ << gt_x_ << ',' << gt_y_ << ',' << gt_yaw_ << '\n';
   else
