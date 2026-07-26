@@ -54,6 +54,14 @@ class EskfCore {
   // GPS: world-frame position [x, y].
   void correctGps(const Eigen::Vector2d& pos_xy, const Eigen::Matrix2d& R);
 
+  // Gyro-bias pseudo-measurement. Leg odometry's yaw rate is an independent,
+  // bias-free measurement of the true yaw rate, so (gyro_wz - wz_leg) measures
+  // the gyro bias directly: h = b_g. This makes b_g strongly observable (it is
+  // otherwise only weakly coupled through the leg-velocity direction), which is
+  // the main lever against long-horizon yaw drift when no absolute heading
+  // sensor exists.
+  void correctGyroBias(double bias_meas, double r);
+
   // Vertical pseudo-measurement: world-frame vertical velocity vz. On flat
   // ground the base's mean vertical velocity is ~0 (it bobs but does not
   // climb), so feeding vz_meas=0 keeps the OTHERWISE UNOBSERVABLE vertical

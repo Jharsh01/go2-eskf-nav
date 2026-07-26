@@ -44,6 +44,11 @@ eskf_node:
 
     # --- Measurement noise (std-devs)
     leg_odom_vel_noise: 0.1           # [m/s]  trust leg odom (it tracks truth to ~10%)
+    leg_odom_scale: 1.111             # undo CHAMP's odom_scaler 0.9 (gait.yaml): the sim
+                                      # floor has no slip, so the 0.9 fudge under-reports
+                                      # speed 10% -> ~1 m drift per 10 m. 1/0.9 = 1.111.
+    use_leg_yaw_bias: true            # observe gyro bias via (gyro_wz - leg wz) -> kills yaw drift
+    leg_yaw_bias_noise: 0.05          # [rad/s] std of that bias pseudo-measurement
     gps_pos_noise: 0.5                # [m]    ~u-blox horizontal
     vz_zero_noise: 0.3                # [m/s]  vz≈0 vertical pseudo-measurement (allows bob)
 

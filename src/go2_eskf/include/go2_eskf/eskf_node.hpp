@@ -83,6 +83,9 @@ class EskfNode : public rclcpp::Node {
   Eigen::Matrix2d R_leg_;
   Eigen::Matrix2d R_gps_;
   double vz_zero_noise_ = 0.3;  // std-dev of the vz≈0 vertical pseudo-measurement
+  double leg_odom_scale_ = 1.0; // undoes CHAMP's odom_scaler velocity fudge
+  bool use_leg_yaw_bias_ = true;   // observe gyro bias via (gyro_wz - leg wz)
+  double r_leg_yaw_bias_ = 2.5e-3; // variance of that bias pseudo-measurement
 
   // Phase 3: slip-adaptive leg covariance. When use_slip_model_ is true, the
   // model maps the latest locomotion features to a slip score that inflates
