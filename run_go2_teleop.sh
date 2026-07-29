@@ -23,11 +23,21 @@
 #   ./run_go2_teleop.sh --lite             # lowest load (no RViz, slower plot)
 #   ./run_go2_teleop.sh --software-render   # CPU (llvmpipe) rendering fallback
 #   ./run_go2_teleop.sh --obstacles        # bring the boxes/cylinders back
+#   ./run_go2_teleop.sh --terrain          # uneven terrain + low-friction patches
 #
 # World: defaults to the obstacle-free go2_eskf/worlds/flat.sdf (same GPS datum,
 # physics, lighting and ground plane as the vendored default.sdf, minus the five
 # obstacle models — box1 sat at (5,0), right on the 10 m square path). Nothing was
 # deleted: --obstacles selects the vendored default.sdf instead.
+#
+# --terrain selects go2_eskf/worlds/terrain.sdf: the same world with the ground
+# plane replaced by a fractal heightmap and four low-friction (mu=0.08) patches on
+# the 10 m square — the sim conditions the slip model needs, since the flat world
+# has a rigid no-slip floor and produces no slip at all. Reverting is just dropping
+# the flag; flat.sdf is untouched and stays the default. Regenerate/retune with:
+#   python3 src/go2_eskf/scripts/make_terrain_world.py --relief 1.0
+# (--relief is the difficulty knob; the start pad is flat at elevation 0 so the
+# robot spawns exactly as it does over flat.sdf.)
 #
 # Load: RViz is OFF by default (biggest easy saving on the RTX 3050). The plot is
 # throttled and, like the ground-truth bridge, niced + started only after the sim
@@ -58,6 +68,7 @@ RVIZ="false"                                 # RViz is heavy on the RTX 3050 —
 PLOT="false"
 SQUARE="false"                               # --square: autonomous drift test, no teleop
 OBSTACLES="false"                            # --obstacles: use the vendored world WITH boxes/cylinders
+TERRAIN="false"                              # --terrain: uneven heightmap + low-friction patches
 RENDER="nvidia"                              # nvidia | software
 PLOT_INTERVAL="0.1"                          # plot redraw period [s] (10 Hz)
 PLOT_VIEW="10"                               # plot XY half-width [m] (13 for --square)
@@ -69,6 +80,7 @@ for arg in "$@"; do
     --plot)             PLOT="true" ;;
     --square)           SQUARE="true"; PLOT="true"; PLOT_VIEW="13" ;;  # autonomous square drift test
     --obstacles)        OBSTACLES="true" ;;   # bring the boxes/cylinders back
+    --terrain)          TERRAIN="true" ;;     # uneven terrain + low-friction patches (slip model)
     --software-render)  RENDER="software" ;;
     --light|--lite)     RVIZ="false"; PLOT_INTERVAL="0.2" ;;  # lowest load
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -93,17 +105,44 @@ command -v gnome-terminal >/dev/null 2>&1 || {
 # physics, lighting and ground plane as the vendored default.sdf, minus the five
 # obstacle models. box1 sits at (5,0), right on the 10 m square path. The obstacles
 # aren't deleted — they're still in the vendored world; --obstacles selects it.
+# --terrain swaps in the generated heightmap world (uneven ground + low-friction
+# patches) for slip-model work. Reverting is just dropping the flag — flat.sdf is
+# never modified and stays the default.
 FLAT_WORLD="$WS/install/share/go2_eskf/worlds/flat.sdf"
 OBSTACLE_WORLD="$WS/install/share/unitree_go2_description/worlds/default.sdf"
-if [[ "$OBSTACLES" == "true" ]]; then
+TERRAIN_WORLD="$WS/install/share/go2_eskf/worlds/terrain.sdf"
+if [[ "$TERRAIN" == "true" && "$OBSTACLES" == "true" ]]; then
+  echo "ERROR: --terrain and --obstacles select different worlds; pick one." >&2
+  exit 1
+fi
+if [[ "$TERRAIN" == "true" ]]; then
+  WORLD="$TERRAIN_WORLD";   WORLD_DESC="terrain.sdf (uneven + slip patches)"
+elif [[ "$OBSTACLES" == "true" ]]; then
   WORLD="$OBSTACLE_WORLD";  WORLD_DESC="default.sdf (obstacles ON)"
 else
   WORLD="$FLAT_WORLD";      WORLD_DESC="flat.sdf (obstacles OFF)"
 fi
 [[ -f "$WORLD" ]] || {
   echo "ERROR: world not found: $WORLD" >&2
-  echo "       Build it first: colcon build --packages-select go2_eskf --merge-install --symlink-install" >&2
+  if [[ "$TERRAIN" == "true" ]]; then
+    echo "       Generate it: python3 src/go2_eskf/scripts/make_terrain_world.py" >&2
+  fi
+  echo "       Then build: colcon build --packages-select go2_eskf --merge-install --symlink-install" >&2
   exit 1; }
+
+# The heightmap <uri> in terrain.sdf is an ABSOLUTE path (gz resolves heightmaps no
+# other way — neither world-relative nor GZ_SIM_RESOURCE_PATH). If the workspace
+# moved since the world was generated, gz silently loads a world with NO GROUND and
+# the robot falls forever, so fail loudly here instead.
+if [[ "$TERRAIN" == "true" ]]; then
+  HM="$(sed -n 's|.*<uri>file://\(.*terrain_height\.png\)</uri>.*|\1|p' "$WORLD" | head -1)"
+  [[ -n "$HM" && -f "$HM" ]] || {
+    echo "ERROR: terrain.sdf references a heightmap that does not exist:" >&2
+    echo "       ${HM:-<no uri found>}" >&2
+    echo "       The workspace has moved since it was generated. Re-run:" >&2
+    echo "       python3 src/go2_eskf/scripts/make_terrain_world.py" >&2
+    exit 1; }
+fi
 
 # --- GPU / offscreen-rendering env for Gazebo -----------------------------
 # Gazebo's sensor-rendering thread (Ogre2) makes an OFFSCREEN GL context separate

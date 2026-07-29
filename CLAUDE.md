@@ -251,6 +251,36 @@ Gazebo sensors (/imu, /odom, /scan)
 must match `NavigationNode::buildDemoMap()`. The Go2 GPS origin lives in
 `unitree_go2_description/worlds/default.sdf` under `<spherical_coordinates>`.
 
+### Go2 worlds (three, switched by flag — no file editing, trivially reversible)
+
+| flag | world | use |
+|------|-------|-----|
+| *(none)* | `go2_eskf/worlds/flat.sdf` | **default** — obstacle-free flat floor |
+| `--obstacles` | vendored `default.sdf` | the five boxes/cylinders |
+| `--terrain` | `go2_eskf/worlds/terrain.sdf` | uneven heightmap + low-friction patches |
+
+`terrain.sdf` is **generated** by `scripts/make_terrain_world.py` (a fractal heightmap plus
+four `mu=0.08` patches on the 10 m square). It exists because the flat world has a rigid
+no-slip floor and so produces *no slip at all* — the slip model has nothing to detect there.
+`--relief` is the difficulty knob (square-path median/max slope: 0.6 m → 3.2°/14.4°,
+0.7 m (default) → 3.7°/16.6°, 1.0 m → 5.2°/23.1°, 1.6 m → 8.4°/34.3°); CHAMP's blind gait
+already falls occasionally on flat ground, so raise it gradually. The start pad is flat at
+elevation 0, so the robot spawns exactly as it does over `flat.sdf` and flat-vs-terrain runs
+start from an identical pose. **Reverting to flat is just dropping the flag** — `flat.sdf` is
+never touched.
+
+Measured facts about gz heightmaps (gz sim 8.11), all established by experiment:
+- Heightmap collision **works** under `bullet-featherstone`, and `<surface><friction><ode><mu>`
+  **is** honoured (a box slid off a 10° `mu=0.08` ramp and held on an identical `mu=1.0` one).
+- Image column → **+X**, row 0 → **+Y** (max Y).
+- Elevation = `pixel / (MAX pixel in the image) * size_z` — gz normalises by the image's own
+  maximum, **not** by 255. The generator always emits a 255 maximum so it is just `pixel/255`.
+- A heightmap `<uri>` resolves **only** as an absolute `file://` path — neither a
+  world-relative path nor `GZ_SIM_RESOURCE_PATH` works. So `terrain.sdf` is machine-specific;
+  re-run the generator after moving the workspace. If the path goes stale gz loads a world
+  with *no ground* and the robot falls forever, so `run_go2_teleop.sh --terrain` checks the
+  referenced PNG exists and fails loudly instead.
+
 ## Dependencies
 
 ROS 2 Jazzy + Gazebo Harmonic on Ubuntu 24.04.
