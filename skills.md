@@ -4,17 +4,153 @@ Working log of the go2_eskf ↔ Unitree Go2 sim integration debugging. Read this
 first when resuming — it captures hard-won findings that aren't obvious from the
 code. (Companion to `CLAUDE.md`; this file is the narrative + current state.)
 
-Last updated: 2026-07-26 — see §0 "resume here". Current headline: square drift is NOT
-repeatable (4–97° yaw error for identical configs), so fixing the measurement comes before
-any further tuning; the drift itself is a HEADING problem, not position drift.
+Last updated: 2026-07-28 — see §0 "resume here". Current headline: the sensor-level yaw
+defect was FOUND AND FIXED analytically (CHAMP's leg odometry mis-derived the body twist);
+and yaw is provably UNOBSERVABLE in the ESKF with GPS off, so no filter tuning could ever
+have fixed the heading drift. Live A/B still pending.
 
 ---
 
 ## 0. CURRENT STATE (start here)
 
-**LATEST (2026-07-26 — NEGATIVE RESULT: square drift is not repeatable, so none of this
+**LATEST (2026-07-28 — CHAMP leg odometry re-derived as a least-squares body twist; two
+defects found and fixed OFFLINE with zero run-to-run variance. Plus the observability
+result that explains why six runs of filter tuning did nothing. Resume here.)**
+
+Triggered by another square screenshot (final **2.735 m**, max 2.786 m). The error ramps on
+the STRAIGHT legs and plateaus through the corners, and the estimated square is rotated and
+shrunk relative to truth — the same heading signature as every earlier run.
+
+### HEADLINE 1: the yaw-rate error is a DERIVATION BUG in CHAMP, proven without the sim
+
+§0's previous entry ended blocked: "the variance looks SENSOR-level, chase it there, but a
+square run is too noisy to resolve anything." That block is now lifted — **the sensor error
+is analytic, so it can be measured with no Gazebo, no GPU and no variance at all.**
+`src/go2_eskf/scripts/leg_odom_model.py` (new, permanent, `PASS`/`FAIL` self-checking)
+simulates a Go2 trot from an EXACTLY known body twist, generates the base-frame foot
+positions `champ::Odometry::getVelocities` would see, and runs the estimator on them.
+
+| estimator | vx/truth | wz/truth (turn) | wz std, truth wz=0 |
+|---|---|---|---|
+| `bearing` (as vendored) | 0.821 | 0.923 | **0.0675 rad/s** |
+| `lsq` (twist solve, touchdown fused) | 0.913 | 0.923 | 0.0951 |
+| `lsq+td` (twist solve + touchdown gate) | 1.000 | 1.000 | 0.0000 |
+| `champ_lsq` (**shipped**) | 0.900 | 1.000 | 0.0000 |
+
+`0.900` is exactly `odom_scaler`, which `leg_odom_scale: 1.111` already undoes — so the
+shipped estimator recovers the twist **exactly** (worst deviation 5.3e-06).
+
+**Two independent defects, isolated by that ablation:**
+
+1. **Yaw rate was derived from a per-foot BEARING sum.** `vel.angular.z` came from
+   `theta_sum`, the change in `atan2f(X, Y)` of each stance foot, attributing the *whole*
+   bearing change to rotation. But body TRANSLATION also swings a planted foot's bearing:
+   `d(theta)/dx = y/(x^2+y^2)` = 2.36 rad/m on Go2 geometry, i.e. **±0.59 rad/s per foot at
+   0.25 m/s** — larger than the 0.4 rad/s turn signal itself. Left and right feet give equal
+   and opposite terms that cancel *only* when the diagonal stance pair is exactly symmetric.
+   So the reported yaw rate was a difference of large near-cancelling numbers whose residual
+   moved with gait phase and contact timing. Measured cost: **±0.0675 rad/s (±3.9°/s) of
+   gait-synchronous false yaw rate while walking dead straight.**
+2. **Touchdown samples were fused.** `prev_foot_contacts_` was maintained and **never read**
+   (the same "computed then unused" pattern as `total_contact` in §5.5). On the sample a
+   foot lands, its position delta spans the SWING, not the stance, and that was counted as
+   body motion. Cost: **~9% of forward speed** and the 0.923 turn-phase yaw-rate under-read.
+
+**Defect 2 explains the long-standing open puzzle** "`leg_odom_scale: 1.111` does not appear
+to reach the estimate" (§0, 2026-07-26 late). It reaches it fine. There were simply TWO
+multiplicative errors: `odom_scaler` 0.9, which `leg_odom_scale` undoes, and a ~0.91
+structural error, which it does not. 0.9 x 0.91 = 0.82, and the model reproduces exactly
+that (0.821). **Close that item.**
+
+**Defect 1 quantitatively reproduces the measured `correctGyroBias` residual.** The model
+predicts `wz_leg` under-reads a wz=0.4 turn by 7.7%, so `gyro_wz - wz_leg` should sit near
++0.031 rad/s during a turn and near zero straight. **Measured live: -0.004/-0.006 straight,
++0.045/+0.052 turning.** Same sign, same order, same turn-correlation — the mechanism §0
+measured but could not explain is this derivation bug. (The live numbers are larger; the
+model uses idealised contact timing, so treat it as the mechanism, not the magnitude.)
+
+### HEADLINE 2: yaw is EXACTLY UNOBSERVABLE in the ESKF with GPS off
+
+This is why six square runs of filter tuning moved nothing, and it should stop anyone from
+trying again. `correctLegOdom` predicts `h = Rz(-psi) * v_world`. Differentiating,
+
+    dh = Rz(-psi) * (dv - J*v*dpsi),  J = [[0,-1],[1,0]]
+
+so **any** perturbation with `dv = dpsi * (-v_y, v_x)` leaves `h` unchanged: rotating the
+heading and rotating the world velocity together is invisible to leg odometry. Leg odom
+constrains the body-frame velocity only. Heading is observable solely through whatever pins
+`v_world` in the WORLD frame — the IMU accel (gutted by `gravity_lp`, which discards
+sustained horizontal accel) or GPS position (off in sim). With GPS off there is no absolute
+heading information anywhere in the system, so `psi` runs pure open-loop on
+`integral(gyro_z - b_g) dt`.
+
+**Consequences, and they are sharp:**
+- The `eskf_core.cpp` comment claiming the old `Q(PSI,PSI)` convention made the filter
+  "refuse the yaw information leg odometry carries in its body-frame vy residual" is
+  **wrong** — there is no such information to refuse. Growing `P(psi)` cannot help;
+  nothing corrects psi. (Keep the `Q` fix anyway: it is the correct convention.)
+- No `R`, `Q`, or gating change can bound heading drift. Only two things can: **reduce the
+  yaw-rate disturbance** (what this session did) or **add an absolute heading reference**
+  (fix the navsat `<stddev>` and enable GPS, or fuse an AHRS/magnetometer yaw).
+- Position error tracking yaw error 1:1 is not a coincidence to be tuned away; it is the
+  structure of the problem.
+
+### What was SHIPPED (vendored edit #6, `champ/include/champ/odometry/odometry.h`)
+
+`getVelocities` now solves the rigid-body twist directly. A planted foot is fixed in the
+world, so its base-frame position obeys `-dr_i/dt = v + w x r_i`. Two equations per stance
+foot, three unknowns, so >=2 stance feet over-determine it and least squares is the correct
+estimator. Solved in centroid-reduced closed form (no matrix inverse — champ targets
+embedded):
+
+    w = sum(r'_x q'_y - r'_y q'_x) / sum(|r'|^2),   v = q_bar + w x r_bar
+
+with `q_i = -dr_i/dt` and primes deviations from the stance mean. A foot contributes only if
+it was in contact on the PREVIOUS sample too. Falls back to the previous value when the twist
+is unobservable (one usable foot, or a trot swapping both diagonal pairs at once).
+
+**Deliberately NOT changed: the `allFeetInContact() || noFootInContact()` early return.**
+Least squares would handle all-four-planted best of all (8 equations), but those literal
+zeros are the no-information FLAG that `eskf_node`'s degenerate gate and ZUPT path key on
+with an exact `== 0.0` test. Routing them through the solver would emit small non-zero noise
+instead, silently killing the standing ZUPT — the cleanest gyro-bias observation available.
+Measured 0/23,000 zeros while walking, so leaving it costs nothing in motion.
+
+### Status: offline-proven, LIVE-UNPROVEN — do not quote a drift improvement yet
+
+- **Green:** `leg_odom_model.py` PASS (5.3e-06), 16/16 GTest, C++=NumPy **2.498e-15**,
+  `champ`/`champ_base`/`go2_eskf` all rebuild clean.
+- **No sim run has been done.** Per this file's own rule, nothing here may be claimed as a
+  drift improvement until measured — and given 4–97° run-to-run variance, **not from one
+  square run either.**
+- **Predicted, so it can be falsified:** `probe_leg_odom.py` should now show
+  `wz_leg/wz_truth` ~1.0 (was 0.734/0.901), `vx_leg/vx_truth` ~0.9 in BOTH phases (was
+  0.894/0.903 straight vs 0.773/0.781 turning), and the `gyro_wz - wz_leg` residual roughly
+  EQUAL straight vs turning (was -0.005 vs +0.05). If the residual equalises, the false
+  turn-only bias injection is gone.
+- **`leg_odom_scale: 1.111` is now correct** rather than under-compensating. Do not retune it
+  before re-measuring — the ~11% shortfall it was chasing was the touchdown bug.
+- If the residual equalises, `bias_update_max_wz` loses its motivation (it was a symptom
+  guard for exactly this). Keep it for now — it is physically right — but it becomes an
+  A/B candidate rather than a fix.
+
+### Next steps (in order)
+
+1. **Re-run `probe_leg_odom.py`** (~1 min of sim, not 6.5) and check the four predictions
+   above. This is a sensor-level check, so it needs far fewer runs than a square.
+2. **Then** square runs, still >=5 per arm, comparing against the recorded distribution
+   (not against any single historical number).
+3. If heading still drifts after the sensor fix, stop tuning the filter and go for an
+   absolute reference — the observability result says nothing else can work. Cheapest path:
+   fix the navsat `<stddev>` to `4.5e-6` in the vendored `unitree_go2_gazebo.xacro` (§2.2)
+   and turn GPS on.
+4. Record the numbers here **whether or not they improve.**
+
+---
+
+**Earlier (2026-07-26 — NEGATIVE RESULT: square drift is not repeatable, so none of this
 session's filter changes can be shown to help. The durable finding is that drift is a
-HEADING problem. Resume here.)**
+HEADING problem.)**
 
 A screenshot of a full 4-corner square run (final **5.945 m**, max 6.144 m — worse than
 the 2.172 m run below) started this. Read the HEADLINE section first; everything else in
@@ -633,6 +769,15 @@ ros2 topic echo /odom/raw --field twist.twist.linear.x   # expect ~0.15 while wa
   did this; the pattern is: teardown -> launch sim + ground_truth -> poll
   `ros2 control list_controllers` for `joint_group_effort_controller.*active` -> start a
   FRESH `go2_eskf_node` (params and filter state clean) -> `square_test.py`.
+- **A sensor error can often be measured OFFLINE, with zero variance — try that before
+  booking sim time.** `leg_odom_model.py` resolved an 8% yaw-rate error and a 9% speed
+  error in seconds, on a question six square runs (~40 min of sim) could not touch, by
+  simulating the estimator's own inputs from a known twist. If a defect is in a
+  *derivation*, a live run is the wrong instrument.
+- **With GPS off, yaw is EXACTLY unobservable in this ESKF** — `correctLegOdom`'s Jacobian
+  has a null direction `dv = dpsi*(-v_y, v_x)`, i.e. rotating heading and world velocity
+  together is invisible to it. No `Q`/`R`/gating change can bound heading drift; only a
+  smaller yaw-rate disturbance or an absolute heading reference can. See §0.
 - **Square drift numbers are NOT repeatable.** Identical configs give 4-97 deg of yaw
   error and 0.4-12.6 m of final position error. Never conclude from one run, and never
   compare a new run against a single historical number. ~5+ runs per arm.
@@ -659,9 +804,9 @@ ros2 topic echo /odom/raw --field twist.twist.linear.x   # expect ~0.15 while wa
   `pkill -f gz-sim-server` matches NOTHING. The real names are `gz sim`, `gz sim server`,
   `gz sim gui`.
 
-## 5. Deliberate vendored edits (5)
+## 5. Deliberate vendored edits (6)
 
-The workspace prefers first-party changes, but five vendored edits are intentional:
+The workspace prefers first-party changes, but six vendored edits are intentional:
 1. **Ground-truth OdometryPublisher** in `unitree_go2_gazebo.xacro` (for benchmarking).
 2. **Perception sensors DISABLED** — commented out in `unitree_go2_robot.xacro` (the
    velodyne / 4D-lidar / D455 includes) and `unitree_go2_gazebo.xacro` (`rgb_camera`
@@ -684,8 +829,21 @@ The workspace prefers first-party changes, but five vendored edits are intention
    at least averaged, by a hardcoded 2.0). Reported yaw rate therefore scaled with the
    number of feet in stance — measured **1.83× truth** on the Go2's trot. Now divided by
    `total_contact`. Rebuild `champ` AND `champ_base` (header-only change, so champ_base
-   must be rebuilt to pick it up). Note the remaining unfixed sibling bug: `delta_theta`
-   has no angle wrapping, so a foot crossing the atan2 branch cut injects a 2π spike.
+   must be rebuilt to pick it up). **Superseded by edit 6**, which removes the bearing
+   derivation entirely — including its unwrapped `delta_theta` (a foot crossing the atan2
+   branch cut would have injected a 2π spike; latent only, because with `atan2f(X, Y)` the
+   cut sits at x=0 on the right-side feet and the ±0.19 m hip offsets keep foot x away
+   from 0).
+6. **CHAMP leg odometry re-derived as a least-squares body twist** — same file,
+   `getVelocities`. Replaces the bearing-sum yaw rate (which mistook translation for
+   rotation, ±0.59 rad/s per foot at 0.25 m/s) and starts ignoring touchdown samples via
+   the already-maintained-but-never-read `prev_foot_contacts_` (which cost ~9% of forward
+   speed). Verified offline against an exactly known twist: `vx/truth` 0.821 → 0.900
+   (= `odom_scaler`, as intended), `wz/truth` 0.923 → 1.000, false yaw-rate noise on a
+   straight walk 0.0675 → 0.0000 rad/s. See §0 and
+   `src/go2_eskf/scripts/leg_odom_model.py`. The `allFeetInContact()` early return is
+   deliberately left alone — its literal zeros are the flag `eskf_node`'s ZUPT path keys
+   on. Rebuild `champ` AND `champ_base`.
 
 ## 6. Files changed this session
 
@@ -748,6 +906,17 @@ The workspace prefers first-party changes, but five vendored edits are intention
   `gyro_scale_noise: 0.10`, **`accel_noise: 50.0 -> 5.0`** (compensates the dt^2 -> dt
   convention change; velocity behaviour intentionally unchanged)
 
+**2026-07-28 (CHAMP leg-odom twist re-derivation — the sensor-level fix):**
+- vendored `champ/include/champ/odometry/odometry.h` — `getVelocities` solves the body
+  twist by centroid-reduced least squares over stance feet; touchdown samples gated via
+  `prev_foot_contacts_`; bearing/`prev_theta_` derivation removed (§5.6). Rebuild `champ`
+  AND `champ_base`.
+- `src/go2_eskf/scripts/leg_odom_model.py` (new, installed) — offline trot model with an
+  exactly known twist; ablates `bearing` / `lsq` / `lsq+td` / `champ_lsq` and self-checks
+  the shipped algorithm to 1e-3. **No ROS, no Gazebo, no variance.** Run it after any
+  change to that header — it is the tripwire if the Python port and the C++ diverge.
+- `src/go2_eskf/CMakeLists.txt` — install `leg_odom_model.py`
+
 ## 7. How to run / build / test
 
 ```bash
@@ -767,6 +936,10 @@ docker stop carla-server                          # docker start carla-server to
 # If the estimate looks frozen, check the ROBOT before the filter:
 ros2 topic echo /ground_truth/odom --once --field pose.pose.position  # z~0.22 ok, ~0.06 collapsed
 ros2 control list_controllers          # joint_group_effort_controller must be 'active'
+
+# Offline leg-odometry check — NO sim, NO GPU, zero run-to-run variance. Do this
+# BEFORE booking sim time on any leg-odom/yaw-rate question (§0).
+python3 src/go2_eskf/scripts/leg_odom_model.py    # expects PASS
 
 # Sensor-level truth check (straight phase + in-place rotation, prints ratios).
 # This is how the 1.83x leg yaw rate and the wrong gyro_z_sign were found — measure

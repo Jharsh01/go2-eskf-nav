@@ -38,6 +38,9 @@ namespace champ
         QuadrupedBase *base_;
         geometry::Transformation prev_foot_position_[4];
         bool prev_foot_contacts_[4];
+        // Retained for source compatibility only: the per-foot bearing history that
+        // getVelocities() used to derive yaw rate from. It now solves for the body
+        // twist directly, so nothing reads this.
         float prev_theta_[4];
         unsigned long int prev_time_;
         champ::Velocities prev_vel_;
@@ -107,50 +110,116 @@ namespace champ
                     return;
                 }
 
-                unsigned int total_contact = 0;
-                float x_sum = 0;
-                float y_sum = 0;
-                float theta_sum = 0;
-
-                for(unsigned int i = 0; i < 4; i++)
-                {
-                    geometry::Transformation current_foot_position = base_->legs[i]->foot_from_base();
-                    
-                    bool foot_in_contact = base_->legs[i]->in_contact();
-                    
-                    float delta_x = (prev_foot_position_[i].X() - current_foot_position.X());
-                    float delta_y = (prev_foot_position_[i].Y() - current_foot_position.Y());
-                    
-                    float current_theta = atan2f(current_foot_position.X(), current_foot_position.Y());
-                    float delta_theta = (current_theta - prev_theta_[i]);
-
-                    if(foot_in_contact)
-                    {
-                        total_contact += 1;
-                        theta_sum += delta_theta;
-                        x_sum += delta_x / 2.0;
-                        y_sum += delta_y / 2.0;
-                    }
-                        
-                    prev_foot_position_[i] = current_foot_position;
-                    prev_foot_contacts_[i] = foot_in_contact;
-                    prev_theta_[i] = current_theta;
-                }
-
                 double dt = (now - prev_time_) / 1000000.0;
                 // zero division check
                 if (dt == 0)
                     dt = 0.02;
-                vel.linear.x =  ((1 - beta_) * ((x_sum * base_->gait_config.odom_scaler) / dt)) + (beta_ * prev_vel_.linear.x);
-                vel.linear.y =  ((1 - beta_) * ((y_sum * base_->gait_config.odom_scaler) / dt)) + (beta_ * prev_vel_.linear.y);
-                // theta_sum is a SUM of each contacting foot's rotation about the base,
-                // so without averaging the reported yaw rate scales with the number of
-                // feet in stance (measured 1.83x truth on the Go2's trot, 2026-07-26).
-                // x_sum/y_sum are already averaged, albeit by a hardcoded 2.0.
-                // total_contact was counted here and then never used.
-                const float contact_n = (total_contact > 0) ? float(total_contact) : 1.0f;
-                vel.angular.z = ((1- beta_ ) * ((theta_sum / contact_n) / dt)) + (beta_ * prev_vel_.angular.z);
-                
+
+                // --- Body twist from the stance feet, by least squares.
+                //
+                // A planted foot is fixed in the world, so its position r_i in the
+                // BASE frame satisfies  -dr_i/dt = v + w x r_i.  Each stance foot
+                // gives two equations in the three unknowns (vx, vy, w), so two or
+                // more stance feet over-determine the twist and least squares is the
+                // right estimator. Solved in centroid-reduced closed form (no matrix
+                // inverse, so this still suits an embedded target):
+                //     w = sum(r'_x q'_y - r'_y q'_x) / sum(|r'|^2)
+                //     v = q_bar + w x r_bar
+                // where q_i = -dr_i/dt and primes are deviations from the stance mean.
+                //
+                // This replaces a per-foot bearing sum (theta_sum of
+                // atan2(X, Y) deltas) that attributed the WHOLE bearing change to
+                // rotation. Body translation also swings a planted foot's bearing --
+                // by +-0.59 rad/s per foot at 0.25 m/s on Go2 geometry -- and those
+                // terms only cancel between left and right feet when the diagonal
+                // pair is exactly symmetric. The reported yaw rate was therefore a
+                // difference of large near-cancelling numbers, whose residual moved
+                // with gait phase and contact timing. Verified against a synthetic
+                // trot with an exactly known twist (scripts/leg_odom_model.py):
+                //   estimator   vx/truth   wz/truth   wz std (rad/s), truth wz=0
+                //   bearing sum   0.821      0.923      0.0675
+                //   this one      0.900      1.000      0.0000
+                // i.e. the old form injected +-3.9 deg/s of gait-synchronous noise
+                // into a straight walk and under-read yaw rate ~8% while turning.
+                // 0.900 is exactly gait_config.odom_scaler, as intended.
+                //
+                // A foot contributes only if it was ALSO in contact on the previous
+                // sample: on the touchdown sample the position delta spans the SWING,
+                // not the stance, and folding that in cost ~9% of forward speed.
+                // (prev_foot_contacts_ was already maintained here but never read.)
+                unsigned int total_contact = 0;
+                float r_mid_x[4], r_mid_y[4], q_x[4], q_y[4];
+                bool use[4];
+                float rx_sum = 0, ry_sum = 0, qx_sum = 0, qy_sum = 0;
+
+                for(unsigned int i = 0; i < 4; i++)
+                {
+                    geometry::Transformation current_foot_position = base_->legs[i]->foot_from_base();
+
+                    bool foot_in_contact = base_->legs[i]->in_contact();
+                    use[i] = foot_in_contact && prev_foot_contacts_[i];
+
+                    r_mid_x[i] = 0.5f * (current_foot_position.X() + prev_foot_position_[i].X());
+                    r_mid_y[i] = 0.5f * (current_foot_position.Y() + prev_foot_position_[i].Y());
+                    q_x[i] = -(current_foot_position.X() - prev_foot_position_[i].X()) / dt;
+                    q_y[i] = -(current_foot_position.Y() - prev_foot_position_[i].Y()) / dt;
+
+                    if(use[i])
+                    {
+                        total_contact += 1;
+                        rx_sum += r_mid_x[i];
+                        ry_sum += r_mid_y[i];
+                        qx_sum += q_x[i];
+                        qy_sum += q_y[i];
+                    }
+
+                    prev_foot_position_[i] = current_foot_position;
+                    prev_foot_contacts_[i] = foot_in_contact;
+                }
+
+                if(total_contact == 0)
+                {
+                    // Every stance foot landed this sample (the trot swaps its
+                    // diagonal pairs at once): no usable displacement, so hold rather
+                    // than fabricate one.
+                    vel.linear.x = prev_vel_.linear.x;
+                    vel.linear.y = prev_vel_.linear.y;
+                    vel.angular.z = prev_vel_.angular.z;
+                    prev_time_ = now;
+                    return;
+                }
+
+                const float inv_n = 1.0f / float(total_contact);
+                const float rx_bar = rx_sum * inv_n;
+                const float ry_bar = ry_sum * inv_n;
+                const float qx_bar = qx_sum * inv_n;
+                const float qy_bar = qy_sum * inv_n;
+
+                float num = 0, den = 0;
+                for(unsigned int i = 0; i < 4; i++)
+                {
+                    if(!use[i])
+                        continue;
+
+                    const float px = r_mid_x[i] - rx_bar;
+                    const float py = r_mid_y[i] - ry_bar;
+                    const float qx = q_x[i] - qx_bar;
+                    const float qy = q_y[i] - qy_bar;
+
+                    num += (px * qy) - (py * qx);
+                    den += (px * px) + (py * py);
+                }
+                // den == 0 means one usable foot (or coincident feet): yaw rate is
+                // unobservable this sample, so carry the previous value.
+                const float w = (den > 1e-9f) ? (num / den) : float(prev_vel_.angular.z);
+
+                const float vx_raw = (qx_bar + (w * ry_bar)) * base_->gait_config.odom_scaler;
+                const float vy_raw = (qy_bar - (w * rx_bar)) * base_->gait_config.odom_scaler;
+
+                vel.linear.x =  ((1 - beta_) * vx_raw) + (beta_ * prev_vel_.linear.x);
+                vel.linear.y =  ((1 - beta_) * vy_raw) + (beta_ * prev_vel_.linear.y);
+                vel.angular.z = ((1 - beta_) * w)      + (beta_ * prev_vel_.angular.z);
+
                 prev_vel_ = vel;
                 prev_time_ = now;
             }

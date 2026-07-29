@@ -192,12 +192,34 @@ with a slip-adaptive measurement-covariance model. Replaces CHAMP's stock
   (`degenerate_hold_sec`); set `leg_odom_gate_degenerate: false` for the old
   fuse-everything behaviour. `/odom/raw`'s **pose** is separately meaningless (a `vel_dt`
   unit bug in `state_estimation.cpp`); only its twist is usable.
+- **CHAMP's leg odometry now solves the body twist by least squares** (vendored edit #6 in
+  `champ/include/champ/odometry/odometry.h`): `-dr_i/dt = v + ω × r_i` over stance feet, in
+  centroid-reduced closed form. It replaces a per-foot *bearing* sum that mistook body
+  translation for rotation (±0.59 rad/s per foot at 0.25 m/s, cancelling only for a
+  perfectly symmetric diagonal pair), and it now ignores touchdown samples whose position
+  delta spans the swing rather than the stance. Offline-verified against an exact twist:
+  `vx/truth` 0.821→0.900 (= `odom_scaler`, which `leg_odom_scale: 1.111` undoes),
+  `wz/truth` 0.923→1.000, false yaw-rate noise on a straight walk 0.0675→0.0000 rad/s.
+  **Not yet validated live.** Rebuild `champ` AND `champ_base` (header-only).
 - **The drift is a HEADING problem, and square results are NOT repeatable.** Across six
   runs, position error tracks yaw error 1:1 (4°→2.3 m … 65°→12.7 m), but identical
   configurations give anywhere from 4° to 97° of yaw error. **Never conclude from one
   square run** — budget ~5+ runs per arm, and relaunch the sim per run (a `gz` world
   reset wedges `controller_manager`). No filter change to date is proven to help. Read
   `skills.md` §0 before touching the yaw path or quoting a drift number.
+- **With GPS off, yaw is EXACTLY unobservable — no filter tuning can fix heading drift.**
+  `correctLegOdom` predicts `h = Rz(-ψ)·v_world`, whose Jacobian has the null direction
+  `δv = δψ·(-v_y, v_x)`: rotating heading and world velocity together is invisible to leg
+  odometry, which constrains body-frame velocity only. Heading is observable only through
+  something that pins `v_world` in the world frame — the IMU accel (gutted by `gravity_lp`)
+  or GPS position (off). So `ψ` runs open-loop on `∫(gyro_z − b_g)dt`. Only two things can
+  help: a smaller yaw-rate disturbance, or an absolute heading reference (fix the navsat
+  `<stddev>` and enable GPS, or fuse an AHRS yaw). Don't retune `Q`/`R` at it.
+- **Leg-odometry defects are best found OFFLINE.** `scripts/leg_odom_model.py` simulates a
+  trot from an exactly known body twist, feeds the estimator its own inputs, and self-checks
+  — no ROS, no Gazebo, zero variance. It resolved an 8% yaw-rate error and a 9% speed error
+  that six square runs could not, and it is the tripwire for the vendored CHAMP twist
+  solver. Run it before booking sim time on any leg-odom question.
 - **Perception sensors (cameras + LiDARs) are DISABLED in the vendored model** — commented out
   in `unitree_go2_robot.xacro` (the 3 velodyne/4D-lidar/D455 includes) and `unitree_go2_gazebo.xacro`
   (the `rgb_camera` block). They are the only GPU-rendered sensors, so they (a) triggered a Gazebo
