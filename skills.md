@@ -214,6 +214,42 @@ Fixed by splitting the two jobs the check was doing:
   yaw wrap across +-pi do NOT abort; a fall while commanded, and a 2 cm/s crawl, do;
   a fall while NOT commanded does not (we may be deliberately holding zero).
 
+**SECOND TERRAIN FINDING (2026-07-29): the robot got wedged, and BOTH causes were
+defects in the generated world, not robot limitations.**
+
+1. **A slip patch was a 27 cm ICE CURB.** Each patch was one 3x3 m rigid plate tilted
+   to the gradient at its centre. Laid on curved terrain such a plate only touches
+   near the middle and its edges float — measured **11.7 / 13.1 / 18.9 / 27.0 cm**
+   above the ground for the four patches. 27 cm is taller than the Go2 is (~22 cm),
+   and CHAMP's blind gait has no step-up reflex.
+   **Fix:** build each patch from small tiles (`--patch-tile`, default 0.40 m), each
+   at its OWN local height and gradient. Worst step onto a patch drops to **2.8 cm**,
+   worst tile-to-tile seam to 1.6 cm, and terrain never pokes above a tile (0.0 cm) —
+   all below the terrain's own fine roughness. Tile-size sweep (step onto patch /
+   seam / poke): 1.00 m -> 6.5/3.1/4.2 cm, 0.50 -> 4.3/2.1/0.9, **0.40 ->
+   2.7/1.6/0.6**, 0.30 -> 2.1/0.9/0.0. 0.40 m gives 64 tiles per patch, 256 total;
+   the world still loads and simulates clean.
+2. **`mu=0.08` made two patches physically unstandable.** A foot holds only if
+   `mu > tan(slope)`, and walking needs roughly twice that. `slip_patch_2` and
+   `slip_patch_3` sit on 6.5 and 5.5 deg (up to 9.7/10.3 deg across the footprint),
+   needing mu > 0.114 / 0.096 just to STAND. At 0.08 the robot slides no matter what
+   it does.
+   **Fix:** default `--patch-mu` 0.08 -> **0.30** (gravel/wet grass: real slip against
+   terrain's ~1.0, still traversable), and the generator now WARNS per patch when
+   `mu < 1.5*tan(max slope on the footprint)`, printing the mu actually needed.
+
+**Lesson worth keeping: a rigid plate cannot represent a surface property on uneven
+ground.** Anything laid on a heightmap has to conform to it or it becomes an
+obstacle, and any friction value has to clear the slope it is placed on. Both are
+now checked and reported by the generator rather than discovered by a wedged robot.
+
+**Also fixed: the generated SDF was not well-formed XML.** XML forbids `--` inside a
+comment and the header comment was full of CLI flags. gz's TinyXML2 accepted it, so
+it went unnoticed; `xml.dom.minidom` rejects it. The command/knobs now live in a
+plain-text sidecar `terrain_params.txt` (which also records the slope/step numbers
+for the run), and the generator validates its own output with a strict parser and
+aborts rather than writing bad XML.
+
 **What terrain does to the ESKF — expect these, they are not bugs:**
 - `correctVerticalVel(0, ·)` is a `vz≈0` pseudo-measurement. Climbing at 0.25 m/s on a
   10 deg slope gives a true `vz` of 0.043 m/s, inside `vz_zero_noise: 0.3`, so it is

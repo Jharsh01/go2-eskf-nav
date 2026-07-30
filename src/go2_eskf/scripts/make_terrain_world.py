@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Generate the uneven-terrain Gazebo world for go2_eskf slip-model work.
 
-Writes three files into --out-dir (default src/go2_eskf/worlds/):
+Writes into --out-dir (default src/go2_eskf/worlds/):
 
     terrain.sdf            the world -- flat.sdf's twin, ground plane swapped for
                            a heightmap, plus low-friction patches
+    terrain_params.txt     provenance: the exact command and the resulting slope /
+                           step / patch numbers. Separate from the SDF because XML
+                           forbids a double hyphen inside a comment, so option flags
+                           cannot be recorded there.
     terrain_height.png     the heightmap (greyscale, (2^n)+1 square)
     terrain_diffuse.png    a ground texture for the heightmap visual
     terrain_normal.png     flat normal map (gz wants one alongside the diffuse)
@@ -36,6 +40,7 @@ Heightmap facts established by measurement against gz sim 8.11 (see skills.md):
 """
 import argparse
 import os
+import xml.dom.minidom
 
 import numpy as np
 from PIL import Image
@@ -147,42 +152,81 @@ def normal_texture(path, size=32):
     Image.fromarray(flat).save(path)
 
 
-def patch_model(name, x, y, z, roll, pitch, side, mu):
-    half_t = 0.05
+PATCH_THICK = 0.04   # slip-tile thickness [m]; most of it sits inside the terrain
+
+
+def patch_model(name, px, py, terrain, side, tile, lift, mu):
+    """One patch as a grid of small tiles, each conforming to the local surface.
+
+    A patch must NOT be a single flat plate. Laid on curved terrain a 3 m plate
+    only touches near its centre and its edges float: MEASURED up to 27 cm above
+    the ground, a curb taller than the Go2 is tall, made of ice. That is what
+    wedged the robot on the first terrain run. Tiling drops the worst step onto a
+    patch to a couple of cm -- below the terrain's own fine roughness.
+    """
+    n = max(1, int(round(side / tile)))
+    t = side / n
+    links = []
+    for a in range(n):
+        for b in range(n):
+            cx = px - side / 2.0 + (a + 0.5) * t
+            cy = py - side / 2.0 + (b + 0.5) * t
+            z0 = terrain.height(cx, cy)
+            gx, gy = terrain.gradient(cx, cy)
+            pitch = -np.arctan(gx)
+            roll = np.arctan(gy * np.cos(pitch))
+            zc = z0 + lift - PATCH_THICK / 2.0
+            links.append(f"""        <link name="t_{a}_{b}">
+          <pose>{cx:.4f} {cy:.4f} {zc:.4f} {roll:.5f} {pitch:.5f} 0</pose>
+          <collision name="collision">
+            <geometry><box><size>{t:.4f} {t:.4f} {PATCH_THICK}</size></box></geometry>
+            <surface>
+              <friction><ode><mu>{mu}</mu><mu2>{mu}</mu2></ode></friction>
+            </surface>
+          </collision>
+          <visual name="visual">
+            <geometry><box><size>{t:.4f} {t:.4f} {PATCH_THICK}</size></box></geometry>
+            <material>
+              <ambient>0.62 0.76 0.85 1</ambient>
+              <diffuse>0.70 0.85 0.95 1</diffuse>
+              <specular>0.9 0.9 0.9 1</specular>
+            </material>
+          </visual>
+        </link>""")
     return f"""
-    <!-- Low-friction patch: mu={mu} over {side} x {side} m at ({x:+.2f}, {y:+.2f}).
-         Sits {PATCH_LIFT * 100:.1f} cm proud of the terrain and is tilted to the
-         local gradient, so it is the surface the feet actually contact. -->
+    <!-- Low-friction patch: mu={mu} over {side} x {side} m centred on
+         ({px:+.2f}, {py:+.2f}), as {n}x{n} tiles of {t:.2f} m. Each tile is placed at
+         its OWN local terrain height and gradient and stands {lift * 100:.1f} cm
+         proud, so the feet contact the patch rather than the ground without
+         having to climb a step. -->
     <model name="{name}">
       <static>true</static>
-      <pose>{x:.4f} {y:.4f} {z:.4f} {roll:.5f} {pitch:.5f} 0</pose>
-      <link name="link">
-        <collision name="collision">
-          <geometry>
-            <box><size>{side} {side} {2 * half_t}</size></box>
-          </geometry>
-          <surface>
-            <friction>
-              <ode><mu>{mu}</mu><mu2>{mu}</mu2></ode>
-            </friction>
-          </surface>
-        </collision>
-        <visual name="visual">
-          <geometry>
-            <box><size>{side} {side} {2 * half_t}</size></box>
-          </geometry>
-          <material>
-            <ambient>0.62 0.76 0.85 1</ambient>
-            <diffuse>0.70 0.85 0.95 1</diffuse>
-            <specular>0.9 0.9 0.9 1</specular>
-          </material>
-        </visual>
-      </link>
+      <pose>0 0 0 0 0 0</pose>
+{chr(10).join(links)}
     </model>
 """
 
 
-PATCH_LIFT = 0.015   # how far a patch's top face stands above the terrain [m]
+def patch_metrics(px, py, terrain, side, tile, lift):
+    """Worst step up onto a tiled patch, and worst terrain poking above it [m]."""
+    n = max(1, int(round(side / tile)))
+    t = side / n
+    step = poke = 0.0
+    for a in range(n):
+        for b in range(n):
+            cx = px - side / 2.0 + (a + 0.5) * t
+            cy = py - side / 2.0 + (b + 0.5) * t
+            z0 = terrain.height(cx, cy)
+            gx, gy = terrain.gradient(cx, cy)
+            edge = a in (0, n - 1) or b in (0, n - 1)
+            for dx in np.linspace(-t / 2, t / 2, 7):
+                for dy in np.linspace(-t / 2, t / 2, 7):
+                    top = z0 + gx * dx + gy * dy + lift
+                    ground = terrain.height(cx + dx, cy + dy)
+                    poke = max(poke, ground - top)
+                    if edge:
+                        step = max(step, top - ground)
+    return step, poke
 
 HEADER = """<?xml version="1.0" ?>
 <!--
@@ -194,18 +238,21 @@ HEADER = """<?xml version="1.0" ?>
   replaced by a fractal heightmap, and low-friction patches are laid on the 10 m
   square that square_test.py drives.
 
-  Reverting to flat ground needs NO file edits and NO regeneration — flat.sdf is
-  untouched and is still the DEFAULT world:
+  Reverting to flat ground needs NO file edits and NO regeneration: flat.sdf is
+  untouched and is still the DEFAULT world, so dropping the launcher's terrain flag
+  is all it takes.
 
-      ./run_go2_teleop.sh --square              # flat.sdf   (default, as before)
-      ./run_go2_teleop.sh --terrain --square    # this world
-      ./run_go2_teleop.sh --obstacles           # vendored default.sdf
+  The exact command that produced this world, and the full knob list, are in
+  terrain_params.txt next to this file. XML forbids a double hyphen inside a
+  comment, so option flags cannot be written here at all — that is why the command
+  lives in the sidecar. The generator validates its own output with a strict XML
+  parser; gz uses TinyXML2 and tolerates the illegal form, so this only ever breaks
+  on stricter tooling.
 
-  The heightmap <uri> MUST be an absolute file:// path (measured: gz resolves
-  neither a world-relative path nor GZ_SIM_RESOURCE_PATH for heightmaps), so this
-  file is machine-specific. Re-run the generator after moving the workspace.
+  The heightmap uri MUST be an absolute file:// path (measured: gz resolves neither
+  a world-relative path nor GZ_SIM_RESOURCE_PATH for heightmaps), so this file is
+  machine-specific. Re-run the generator after moving the workspace.
 
-  GENERATED WITH: {cmdline}
 {stats}-->
 <sdf version="1.8">
   <world name="default">
@@ -272,10 +319,21 @@ def main():
                     help="radius of the flat spawn pad [m] (default 1.5)")
     ap.add_argument("--pad-blend", type=float, default=2.5,
                     help="extra radius over which the pad blends into terrain [m]")
-    ap.add_argument("--patch-mu", type=float, default=0.08,
-                    help="friction of the slip patches (terrain default is ~1.0)")
+    ap.add_argument("--patch-mu", type=float, default=0.30,
+                    help="friction of the slip patches (terrain default is ~1.0). "
+                         "A foot only holds if mu > tan(local slope), and walking "
+                         "needs roughly twice that, so mu must clear the slope the "
+                         "patch sits on — the generator warns if it does not. 0.30 "
+                         "is gravel/wet grass: real slip, still traversable. 0.08 is "
+                         "ice and the robot cannot stand on any slope above 4.6 deg.")
     ap.add_argument("--patch-size", type=float, default=3.0,
                     help="side length of each square slip patch [m]")
+    ap.add_argument("--patch-tile", type=float, default=0.4,
+                    help="patches are built from tiles this size [m] (default 0.4) "
+                         "so they conform to the terrain instead of forming a curb. "
+                         "A single flat plate floats up to 27 cm above curved ground.")
+    ap.add_argument("--patch-lift", type=float, default=0.012,
+                    help="how far a patch tile stands above the local terrain [m]")
     ap.add_argument("--no-patches", action="store_true",
                     help="uneven terrain only, no low-friction patches")
     args = ap.parse_args()
@@ -310,16 +368,30 @@ def main():
     # scaled by pixel/255 * relief. Patch placement then matches to the millimetre.
     terrain = Terrain(pix.astype(np.float64) / 255.0 * args.relief, ext)
 
-    patches = []
+    patches, warnings = [], []
     if not args.no_patches:
         for k, (px, py) in enumerate(DEFAULT_PATCHES):
             zt = terrain.height(px, py)
-            gx, gy = terrain.gradient(px, py)
-            pitch = -np.arctan(gx)
-            roll = np.arctan(gy * np.cos(pitch))
-            zc = zt + PATCH_LIFT - 0.05
-            patches.append((f"slip_patch_{k}", px, py, zc, roll, pitch, zt,
-                            np.degrees(np.arctan(np.hypot(gx, gy)))))
+            # Worst slope anywhere on the footprint, not just at the centre — that
+            # is what decides whether a foot can hold.
+            half = args.patch_size / 2.0
+            slopes = [np.hypot(*terrain.gradient(px + dx, py + dy))
+                      for dx in np.linspace(-half, half, 13)
+                      for dy in np.linspace(-half, half, 13)]
+            slope_max = float(np.max(slopes))
+            step, poke = patch_metrics(px, py, terrain, args.patch_size,
+                                       args.patch_tile, args.patch_lift)
+            patches.append((f"slip_patch_{k}", px, py, zt,
+                            np.degrees(np.arctan(slope_max)), step, poke))
+            # mu must exceed tan(slope) for a foot to hold at all, and about twice
+            # that to push off and walk.
+            if args.patch_mu < 1.5 * slope_max:
+                warnings.append(
+                    f"slip_patch_{k} at ({px:+.1f},{py:+.1f}) reaches "
+                    f"{np.degrees(np.arctan(slope_max)):.1f} deg slope, needing "
+                    f"mu > {slope_max:.3f} to stand and ~{1.5 * slope_max:.3f} to "
+                    f"walk, but --patch-mu is {args.patch_mu}. The robot will slide "
+                    f"and probably fall here.")
 
     # ---- stats, echoed into the file header and to stdout
     slope = terrain.slope_deg()
@@ -341,7 +413,10 @@ def main():
         f"    start pad    flat (elevation 0.000 m) out to r={args.pad_radius:.1f} m, "
         f"blended to r={args.pad_radius + args.pad_blend:.1f} m\n"
         f"    slip patches {len(patches)}"
-        + (f" of {args.patch_size:.1f} x {args.patch_size:.1f} m at mu={args.patch_mu}"
+        + (f" of {args.patch_size:.1f} x {args.patch_size:.1f} m at mu={args.patch_mu}, "
+           f"tiled at {args.patch_tile:.2f} m, {args.patch_lift * 1000:.0f} mm proud; "
+           f"worst step onto a patch "
+           f"{max(p[5] for p in patches) * 100:.1f} cm"
            if patches else " (disabled)") + "\n")
 
     cmdline = ("python3 src/go2_eskf/scripts/make_terrain_world.py"
@@ -349,10 +424,12 @@ def main():
                f" --seed {args.seed} --pad-radius {args.pad_radius:g}"
                f" --pad-blend {args.pad_blend:g}"
                + ("" if not patches else
-                  f" --patch-mu {args.patch_mu:g} --patch-size {args.patch_size:g}")
+                  f" --patch-mu {args.patch_mu:g} --patch-size {args.patch_size:g}"
+                  f" --patch-tile {args.patch_tile:g}"
+                  f" --patch-lift {args.patch_lift:g}")
                + (" --no-patches" if args.no_patches else ""))
 
-    body = [HEADER.format(cmdline=cmdline, stats=stats)]
+    body = [HEADER.format(stats=stats)]
     body.append(f"""
     <!-- Terrain. Replaces flat.sdf's infinite ground plane; there is no plane
          underneath, so the {ext:.0f} x {ext:.0f} m heightmap is the only floor.
@@ -387,25 +464,61 @@ def main():
     </model>
 """)
 
-    for name, px, py, zc, roll, pitch, _zt, _sl in patches:
-        body.append(patch_model(name, px, py, zc, roll, pitch,
-                                args.patch_size, args.patch_mu))
+    for name, px, py, _zt, _sl, _step, _poke in patches:
+        body.append(patch_model(name, px, py, terrain, args.patch_size,
+                                args.patch_tile, args.patch_lift, args.patch_mu))
 
     body.append("  </world>\n</sdf>\n")
 
+    sdf_text = "".join(body)
+
+    # Fail loudly rather than shipping malformed XML. gz's TinyXML2 is lenient (it
+    # accepted a double hyphen inside a comment, which XML forbids), so without this
+    # check the world only breaks later, on stricter tooling.
+    try:
+        xml.dom.minidom.parseString(sdf_text)
+    except Exception as exc:  # noqa: BLE001 - report and abort whatever it is
+        raise SystemExit(f"generated SDF is not well-formed XML: {exc}")
+
     world_path = os.path.join(out_dir, "terrain.sdf")
     with open(world_path, "w") as fh:
-        fh.write("".join(body))
+        fh.write(sdf_text)
+
+    # Provenance sidecar: plain text, so it can hold the flags the SDF comment cannot.
+    params_path = os.path.join(out_dir, "terrain_params.txt")
+    with open(params_path, "w") as fh:
+        fh.write("terrain.sdf provenance — regenerate with exactly this command:\n\n")
+        fh.write(f"    {cmdline}\n\n")
+        fh.write(stats)
+        fh.write("\nPer-patch detail (step = worst climb onto a patch; a patch is\n"
+                 "tiled so it conforms to the terrain instead of forming a curb):\n")
+        for name, px, py, zt, sl, step, poke in patches:
+            fh.write(f"    {name}: ({px:+.1f}, {py:+.1f}) terrain z={zt:.3f} m, "
+                     f"max slope {sl:.1f} deg, worst step up {step * 100:.1f} cm, "
+                     f"terrain pokes above by {poke * 100:.1f} cm\n")
+        if warnings:
+            fh.write("\nWARNINGS:\n")
+            for w in warnings:
+                fh.write(f"    * {w}\n")
+        fh.write("\nFull knob list: run the generator with -h.\n")
 
     print(f"wrote {world_path}")
+    print(f"      {params_path}")
     print(f"      {height_png}")
     print(f"      {diffuse_png}")
     print(f"      {normal_png}")
     print()
     print(stats.rstrip())
-    for name, px, py, _zc, roll, pitch, zt, sl in patches:
+    for name, px, py, zt, sl, step, poke in patches:
         print(f"    {name}: ({px:+.1f}, {py:+.1f}) terrain z={zt:.3f} m, "
-              f"slope {sl:.1f} deg, rpy=({roll:+.3f}, {pitch:+.3f}, 0)")
+              f"max slope {sl:.1f} deg, worst step up {step * 100:.1f} cm, "
+              f"terrain pokes above by {poke * 100:.1f} cm")
+    if warnings:
+        print()
+        print("  WARNING — the robot will not be able to walk on these patches:")
+        for w in warnings:
+            print(f"    * {w}")
+        print("    Raise --patch-mu, or move/shrink the patches onto flatter ground.")
     print()
     print("Run it (no rebuild needed — worlds/ is symlink-installed):")
     print("    ./run_go2_teleop.sh --terrain --square")

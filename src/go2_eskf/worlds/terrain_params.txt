@@ -1,0 +1,18 @@
+terrain.sdf provenance — regenerate with exactly this command:
+
+    python3 src/go2_eskf/scripts/make_terrain_world.py --extent 40 --samples 257 --relief 0.7 --seed 3 --pad-radius 1.5 --pad-blend 2.5 --patch-mu 0.3 --patch-size 3 --patch-tile 0.4 --patch-lift 0.012
+
+    terrain      40 x 40 m, 257x257 samples (15.6 cm/cell), relief 0.70 m
+    slope        median 3.6 deg, 95th pct 7.5 deg, max 19.5 deg
+    square path  elevation 0.00..0.56 m, slope median 3.7 deg / max 16.6 deg
+    start pad    flat (elevation 0.000 m) out to r=1.5 m, blended to r=4.0 m
+    slip patches 4 of 3.0 x 3.0 m at mu=0.3, tiled at 0.40 m, 12 mm proud; worst step onto a patch 2.8 cm
+
+Per-patch detail (step = worst climb onto a patch; a patch is
+tiled so it conforms to the terrain instead of forming a curb):
+    slip_patch_0: (+5.0, +0.0) terrain z=0.261 m, max slope 9.8 deg, worst step up 2.7 cm, terrain pokes above by 0.0 cm
+    slip_patch_1: (+10.0, -5.0) terrain z=0.307 m, max slope 7.3 deg, worst step up 2.1 cm, terrain pokes above by 0.0 cm
+    slip_patch_2: (+5.0, -10.0) terrain z=0.544 m, max slope 9.7 deg, worst step up 2.2 cm, terrain pokes above by 0.0 cm
+    slip_patch_3: (+0.0, -5.0) terrain z=0.516 m, max slope 10.3 deg, worst step up 2.8 cm, terrain pokes above by 0.0 cm
+
+Full knob list: run the generator with -h.
