@@ -176,6 +176,44 @@ Design points worth keeping:
   machine-specific (re-run the generator after moving the workspace) and the launcher
   verifies the referenced PNG exists before starting.
 
+**FIRST TERRAIN RUN (2026-07-29): the world works, but the run was VOID — and it
+exposed a real bug in `square_test.py`.** Reported final 8.776 m / max 8.799 m.
+**Do not record that as a terrain drift number.** What actually happened:
+
+- The heightmap, its texture and the tilted `mu=0.08` patches all render and simulate
+  correctly, and the robot walks on them. The world itself is validated.
+- Ground truth completed leg 1 along y=0, wandered near (6,+1.4), then **stopped at
+  about (9,-3)** — the robot went down. Meanwhile the estimate carried on to (9,-12).
+- Error was ~flat until t≈20 s, reached ~3 m during leg 1 (`slip_patch_0` sits at
+  (5,0), right on it), plateaued ~3.5 m, then climbed steeply from t≈95 s to 8.8 m.
+- That final climb is **phantom motion**: ~50 s of commanded driving against a prone
+  robot. 9 m of estimate travel over 50 s ≈ 0.18 m/s of false velocity, exactly what
+  scrabbling feet feed a leg-odometry estimator (a foot sliding backwards under a
+  stationary base is indistinguishable from the base moving forwards).
+
+**Root cause — `STAND_Z` is an ABSOLUTE world-z test and so is terrain-blind.** It
+compares base z against 0.18 m, which only means "prone" when the floor is at z=0. On
+`terrain.sdf` the robot walks at elevations up to 0.56 m, so a robot collapsed at
+elevation 0.4 m reads z≈0.46 and the fall is never detected — the test drives a prone
+robot indefinitely and reports the resulting runaway as drift. **Every drift number
+from an uneven-ground run predating this fix is suspect for the same reason.**
+
+Fixed by splitting the two jobs the check was doing:
+- **Before the robot has ever stood**, the absolute test is kept and is correct: every
+  world spawns it on ground at elevation 0 (`terrain.sdf` has a flat start pad for
+  exactly this reason). This preserves the original "controller never activated"
+  diagnostic unchanged.
+- **After it has stood**, three terrain-agnostic tests, any of which aborts:
+  absolute z (still valid on flat, harmless elsewhere); **body tilt > 60 deg** from
+  the ground-truth quaternion (`acos(1 - 2(qx^2+qy^2))`, independent of terrain
+  height — 60 clears the 38.9 deg a *standing* robot reaches at `--relief 1.6`); and
+  a **stall** — commanded to move for 6 s while ground truth moved < 15 cm AND turned
+  < 0.15 rad. The stall test is what catches a belly flop, which can be perfectly
+  level and so invisible to a tilt test.
+- Unit-tested with no sim (8 cases): walking, in-place turning, a 5 cm/s crawl and a
+  yaw wrap across +-pi do NOT abort; a fall while commanded, and a 2 cm/s crawl, do;
+  a fall while NOT commanded does not (we may be deliberately holding zero).
+
 **What terrain does to the ESKF — expect these, they are not bugs:**
 - `correctVerticalVel(0, ·)` is a `vz≈0` pseudo-measurement. Climbing at 0.25 m/s on a
   10 deg slope gives a true `vz` of 0.043 m/s, inside `vz_zero_noise: 0.3`, so it is
@@ -834,6 +872,14 @@ ros2 topic echo /odom/raw --field twist.twist.linear.x   # expect ~0.15 while wa
   has a null direction `dv = dpsi*(-v_y, v_x)`, i.e. rotating heading and world velocity
   together is invisible to it. No `Q`/`R`/gating change can bound heading drift; only a
   smaller yaw-rate disturbance or an absolute heading reference can. See §0.
+- **A fallen robot inflates drift instead of zeroing it — and an absolute-height fall
+  test is terrain-blind.** `square_test.py`'s `STAND_Z` compares base z against 0.18 m,
+  which only means "prone" over a floor at z=0; on `terrain.sdf` a robot collapsed at
+  elevation 0.4 m reads 0.46 m and passes. The test then drives a prone robot whose feet
+  scrabble, leg odometry reports motion that is not happening, and the run reports a
+  large bogus drift (measured: 8.8 m, of which ~9 m was phantom travel after the fall).
+  Post-standing falls are now caught by body tilt and by a stall test instead. **Always
+  check that ground truth actually completed the square before quoting a number.**
 - **Square drift numbers are NOT repeatable.** Identical configs give 4-97 deg of yaw
   error and 0.4-12.6 m of final position error. Never conclude from one run, and never
   compare a new run against a single historical number. ~5+ runs per arm.

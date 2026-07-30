@@ -18,6 +18,7 @@ Respects the gait limits in gait.yaml (vx<=0.3, wz<=0.5).
 """
 
 import argparse
+import collections
 import math
 import sys
 
@@ -45,12 +46,34 @@ class SquareTest(Node):
     ARRIVE_TOL = 0.25       # [m] corner acceptance radius
     HEAD_TOL = 0.10         # [rad] heading good enough to start driving
     HEAD_REDO = 0.60        # [rad] heading bad enough to stop and re-turn
-    # Base height below which the Go2 is NOT standing. It spawns at z=0.375 and
-    # stands at ~0.30; lying on its belly it reads ~0.06. If ros2_control never
-    # activated joint_group_effort_controller the robot collapses, and driving a
-    # prone robot silently produces a "frozen at origin" trace that looks like an
-    # estimator bug. Refuse to drive until it is actually standing.
+    # Base height below which the Go2 is NOT standing, as an ABSOLUTE world z. It
+    # spawns at z=0.375 and stands at ~0.30; lying on its belly it reads ~0.06. If
+    # ros2_control never activated joint_group_effort_controller the robot collapses,
+    # and driving a prone robot silently produces a "frozen at origin" trace that
+    # looks like an estimator bug. Refuse to drive until it is actually standing.
+    #
+    # This test is only valid BEFORE the robot has stood: every world spawns it on
+    # ground at elevation 0 (terrain.sdf has a deliberately flat start pad), so the
+    # absolute comparison is sound there. It is NOT a valid fall detector afterwards
+    # on uneven ground — a robot collapsed at terrain elevation 0.4 m reads z~0.46,
+    # far above this threshold, so the fall goes unnoticed and the test keeps driving
+    # a prone robot whose feet scrabble in place. Leg odometry then reports forward
+    # motion that is not happening and the estimate runs away by metres. MEASURED on
+    # terrain.sdf: a fall at (9,-3) produced 50 s of phantom motion and a bogus
+    # 8.8 m "drift" figure. Post-standing falls are caught by TILT_MAX / stall below.
     STAND_Z = 0.18
+    # Body tilt beyond which it has certainly gone over. Must clear the terrain
+    # slope a STANDING robot legitimately sits at: terrain.sdf reaches 19.5 deg at
+    # the default --relief 0.7 and 38.9 deg at 1.6, hence 60.
+    TILT_MAX = math.radians(60.0)
+    # Stall = we are commanding motion but ground truth is not moving, in EITHER
+    # position or heading. Catches a belly flop (which can be perfectly level, so
+    # TILT_MAX misses it) and getting wedged on terrain. At 0.25 m/s the window
+    # should cover ~1.5 m, so 0.15 m is a 10x margin against a slow crawl.
+    STALL_WIN = 6.0         # [s] look-back window
+    STALL_DIST = 0.15       # [m] displacement below this counts as no progress
+    STALL_YAW = 0.15        # [rad] yaw change below this counts as no progress
+    STALL_CMD = 0.02        # [m/s, rad/s] commanded motion above this counts as "asked to move"
 
     def __init__(self, side, speed, ccw):
         super().__init__("square_test")
@@ -66,8 +89,11 @@ class SquareTest(Node):
         self.mode = "TURN"
         self.truth = None       # (x, y, yaw)
         self.truth_z = None     # base height [m], for the standing check
+        self.truth_tilt = 0.0   # angle between base z and world z [rad]
         self.prone_warned = False
         self.stood_once = False  # distinguishes "never stood" from "fell mid-run"
+        # (t, x, y, yaw, cmd_moving) samples for the stall detector.
+        self.history = collections.deque()
         self.est = None         # (x, y)
         self.max_err = 0.0
         self.err_sum = 0.0
@@ -86,8 +112,13 @@ class SquareTest(Node):
 
     def _gt_cb(self, msg):
         p = msg.pose.pose.position
-        self.truth = (p.x, p.y, yaw_from_quat(msg.pose.pose.orientation))
+        q = msg.pose.pose.orientation
+        self.truth = (p.x, p.y, yaw_from_quat(q))
         self.truth_z = p.z
+        # Angle between the base z axis and world up: R*(0,0,1) has z-component
+        # 1 - 2(qx^2 + qy^2). Independent of terrain height, unlike truth_z.
+        self.truth_tilt = math.acos(
+            max(-1.0, min(1.0, 1.0 - 2.0 * (q.x * q.x + q.y * q.y))))
 
     def _est_cb(self, msg):
         p = msg.pose.pose.position
@@ -124,38 +155,70 @@ class SquareTest(Node):
             f"  mean error         : {mean:.3f} m\n"
             "================================")
 
+    def _stalled(self):
+        """Commanded to move for a whole window, but ground truth did not move."""
+        if len(self.history) < 2:
+            return None
+        t0, x0, y0, yaw0, _ = self.history[0]
+        t1, x1, y1, yaw1, _ = self.history[-1]
+        if t1 - t0 < self.STALL_WIN:
+            return None                       # not enough history yet
+        if not all(moving for _, _, _, _, moving in self.history):
+            return None                       # we were not asking it to move
+        moved = math.hypot(x1 - x0, y1 - y0)
+        turned = abs(wrap(yaw1 - yaw0))
+        if moved < self.STALL_DIST and turned < self.STALL_YAW:
+            return (f"no progress for {t1 - t0:.1f} s while commanded to move "
+                    f"({moved * 100:.0f} cm, {math.degrees(turned):.0f} deg)")
+        return None
+
+    def _abort_fallen(self, why):
+        self.cmd_pub.publish(Twist())
+        self.get_logger().error(
+            f"ROBOT FELL/STUCK at truth=({self.truth[0]:+.2f},{self.truth[1]:+.2f}) "
+            f"after {self.wp_i}/4 corners — {why}. This is a CHAMP gait failure in "
+            "sim, not an estimator fault. Drift numbers past this point are "
+            "MEANINGLESS: a prone robot's feet scrabble in place, leg odometry "
+            "reports motion that is not happening, and the estimate runs away. "
+            "Partial summary:")
+        self._finish()
+
     def _step(self):
         if self.done:
             return
         if self.truth is None:
             return  # waiting for ground truth bridge
 
-        # Don't drive a robot that isn't on its feet — see STAND_Z.
-        if self.truth_z is not None and self.truth_z < self.STAND_Z:
-            self.cmd_pub.publish(Twist())
-            if self.stood_once:
-                # It walked and then went down: a gait failure, not a setup problem.
-                # Abort rather than idle — the drift measurement is void from here,
-                # and a silent stall wastes the whole run.
-                self.get_logger().error(
-                    f"ROBOT FELL at truth=({self.truth[0]:+.2f},{self.truth[1]:+.2f}) "
-                    f"after {self.wp_i}/4 corners (base z={self.truth_z:.3f} m). "
-                    "This is a CHAMP gait failure in sim, not an estimator fault — "
-                    "drift numbers past this point are meaningless. Partial summary:")
-                self._finish()
+        # Before it has ever stood, the absolute STAND_Z test is the right one: every
+        # world spawns the robot on ground at elevation 0. See STAND_Z.
+        if not self.stood_once:
+            if self.truth_z is not None and self.truth_z < self.STAND_Z:
+                self.cmd_pub.publish(Twist())
+                if not self.prone_warned:
+                    self.get_logger().warn(
+                        f"Robot base is at z={self.truth_z:.3f} m (< {self.STAND_Z} m) and it has "
+                        "never stood, so /cmd_vel is held at zero. The leg controller most likely "
+                        "never activated: check `ros2 control list_controllers` for "
+                        "joint_group_effort_controller.")
+                    self.prone_warned = True
                 return
-            if not self.prone_warned:
-                self.get_logger().warn(
-                    f"Robot base is at z={self.truth_z:.3f} m (< {self.STAND_Z} m) and it has "
-                    "never stood, so /cmd_vel is held at zero. The leg controller most likely "
-                    "never activated: check `ros2 control list_controllers` for "
-                    "joint_group_effort_controller.")
-                self.prone_warned = True
+            self.stood_once = True
+            if self.prone_warned:
+                self.get_logger().info("Robot is standing now — starting the square.")
+                self.prone_warned = False
+
+        # It has walked. Now detect going down WITHOUT assuming flat ground: absolute
+        # height (valid on flat only), body tilt, and a stall. Any one aborts.
+        if self.truth_z is not None and self.truth_z < self.STAND_Z:
+            self._abort_fallen(f"base z={self.truth_z:.3f} m below {self.STAND_Z} m")
             return
-        self.stood_once = True
-        if self.prone_warned:
-            self.get_logger().info("Robot is standing now — starting the square.")
-            self.prone_warned = False
+        if self.truth_tilt > self.TILT_MAX:
+            self._abort_fallen(f"body tilted {math.degrees(self.truth_tilt):.0f} deg")
+            return
+        stall = self._stalled()
+        if stall is not None:
+            self._abort_fallen(stall)
+            return
 
         x, y, yaw = self.truth
         gx, gy = self.waypoints[self.wp_i]
@@ -186,6 +249,16 @@ class SquareTest(Node):
                 cmd.linear.x = min(self.V_MAX, max(0.08, 0.8 * dist))
                 cmd.angular.z = max(-self.W_MAX, min(self.W_MAX, 1.2 * herr))
         self.cmd_pub.publish(cmd)
+
+        # Feed the stall detector: what we asked for, and where truth actually is.
+        moving = (abs(cmd.linear.x) > self.STALL_CMD or
+                  abs(cmd.angular.z) > self.STALL_CMD)
+        now = self.get_clock().now().nanoseconds * 1e-9
+        self.history.append((now, x, y, yaw, moving))
+        # Keep MORE than one window, so the oldest sample is genuinely >= STALL_WIN
+        # old and _stalled()'s span test can actually be satisfied.
+        while self.history and now - self.history[0][0] > self.STALL_WIN * 1.5:
+            self.history.popleft()
 
 
 def main():
