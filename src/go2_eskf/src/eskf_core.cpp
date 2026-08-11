@@ -80,13 +80,28 @@ void EskfCore::predictImu(const Eigen::Vector3d& accel_body, double gyro_z,
   F(PSI, BG) = -dt;                                                  // dpsi/db
 
   // --- Discrete process noise Q.
+  // accel_noise / gyro_noise / gyro_bias_noise are CONTINUOUS-TIME densities, so
+  // every term integrates as sigma^2 * dt. This previously used dt^2 for the accel
+  // and gyro terms (the per-SAMPLE convention) while the bias term already used
+  // dt — internally inconsistent, and 100x too small for psi at dt=0.01. The
+  // consequence was that P(psi) barely grew, so the filter effectively refused the
+  // yaw information leg odometry carries in its body-frame vy residual and heading
+  // ran open-loop off the gyro. Position error then tracked yaw error 1:1
+  // (measured: 4.3 deg -> 2.3 m, 65 deg -> 12.7 m over a 10 m square).
   const double sa2 = cfg_.accel_noise * cfg_.accel_noise;
   const double sg2 = cfg_.gyro_noise * cfg_.gyro_noise;
   const double sbg2 = cfg_.gyro_bias_noise * cfg_.gyro_bias_noise;
+  // Yaw-rate scale error, the dominant heading disturbance here (see Config).
+  const double scale_sigma = cfg_.gyro_scale_noise * gyro_z;
+  const Eigen::Matrix3d I3 = Eigen::Matrix3d::Identity();
   Mat8 Q = Mat8::Zero();
-  Q.block<3, 3>(PX, PX) = Eigen::Matrix3d::Identity() * (0.25 * sa2 * dt * dt * dt * dt);
-  Q.block<3, 3>(VX, VX) = Eigen::Matrix3d::Identity() * (sa2 * dt * dt);
-  Q(PSI, PSI) = sg2 * dt * dt;
+  // Standard discrete white-noise-acceleration model, including the p-v
+  // cross-covariance the previous diagonal-only form omitted.
+  Q.block<3, 3>(PX, PX) = I3 * (sa2 * dt * dt * dt / 3.0);
+  Q.block<3, 3>(PX, VX) = I3 * (sa2 * dt * dt / 2.0);
+  Q.block<3, 3>(VX, PX) = I3 * (sa2 * dt * dt / 2.0);
+  Q.block<3, 3>(VX, VX) = I3 * (sa2 * dt);
+  Q(PSI, PSI) = (sg2 + scale_sigma * scale_sigma) * dt;
   Q(BG, BG) = sbg2 * dt;
 
   P_ = F * P_ * F.transpose() + Q;

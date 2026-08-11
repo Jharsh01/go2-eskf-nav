@@ -102,8 +102,9 @@ def make_demo_logs(out_dir):
         with open(path, "w") as f:
             f.write(",".join(M.LOG_COLUMNS) + "\n")
             for i in range(len(t)):
+                # est_z, est_vx, est_vy, est_bg are unused by the metrics.
                 f.write(f"{t[i]:.6f},{est_xy[i,0]:.6f},{est_xy[i,1]:.6f},0,"
-                        f"{est_yaw[i]:.6f},0,0,"
+                        f"{est_yaw[i]:.6f},0,0,0,"
                         f"{gt_xy[i,0]:.6f},{gt_xy[i,1]:.6f},{gt_yaw[i]:.6f}\n")
         return path
 

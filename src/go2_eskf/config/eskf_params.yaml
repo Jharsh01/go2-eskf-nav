@@ -18,8 +18,14 @@ eskf_node:
     # --- Attitude / gravity handling
     attitude_source: "gravity_lp"     # gravity_lp | accel | orientation
     grav_lp_beta: 0.995               # gravity low-pass smoothing (closer to 1 = slower)
-    gyro_z_sign: -1.0                 # sim IMU is ~180deg flipped -> yaw rate is negated;
-                                      # -1 un-flips it so the estimate turns the right way. +1 for real IMU.
+    gyro_z_sign: 1.0                  # MEASURED 2026-07-26: raw /imu/data angular_velocity.z
+                                      # vs ground truth during a commanded wz=+0.4 turn gave
+                                      # wz_gyro/wz_truth = +0.925 — SAME sign, near-unity gain.
+                                      # The sim IMU's yaw rate is NOT negated, so -1 (set from
+                                      # the earlier "mirrored heading" reading, which was
+                                      # confounded by the leg-yaw bug below) made the filter turn
+                                      # the WRONG WAY: harmless while wz~0, ruinous every corner.
+                                      # Use -1 only for an IMU actually mounted yaw-flipped.
     accel_clip: 5.0                   # clip motion-accel magnitude [m/s^2]. Tight: the
                                       # sim's contact impacts spike to ~215 m/s^2; a walking
                                       # base's true CoM accel is only a few m/s^2, so clip
@@ -38,9 +44,21 @@ eskf_node:
     # leg odometry dominates. At 1.0 the leg-odom Kalman gain was ~0.06, so the
     # estimate ignored leg odom and its position stayed frozen while walking. The
     # sim IMU (215 m/s^2 contact spikes) genuinely warrants a large value.
-    accel_noise: 50.0                 # [m/s^2] large: leg odometry dominates velocity
+    # RETUNED 2026-07-26 (50.0 -> 5.0): eskf_core's Q now uses the continuous-time
+    # convention (sigma^2 * dt) for the accel and gyro terms instead of the
+    # per-sample sigma^2 * dt^2. At dt=0.01 that is 100x larger, so accel_noise is
+    # divided by 10 to leave Q(v,v) = sa^2*dt = 0.25 per step — numerically identical
+    # to the old 50.0 with dt^2, i.e. velocity behaviour is deliberately unchanged.
+    accel_noise: 5.0                  # [m/s^2] large: leg odometry dominates velocity
     gyro_noise: 0.002                 # [rad/s]
     gyro_bias_noise: 0.0001           # [rad/s/sqrt(s)]
+    # Fractional yaw-rate SCALE uncertainty — the real heading disturbance here.
+    # MEASURED: wz_gyro/wz_truth = 0.830 and 0.964 during wz=+0.4 turns, i.e. a
+    # 4-17% scale error, integrated open-loop into psi. Q(psi,psi) gets an extra
+    # (gyro_scale_noise*wz)^2 term so heading goes uncertain exactly while turning
+    # and leg odometry's vy residual can correct it. 0 = white-noise only (the old
+    # behaviour, which left position error tracking yaw error 1:1).
+    gyro_scale_noise: 0.10
 
     # --- Measurement noise (std-devs)
     leg_odom_vel_noise: 0.1           # [m/s]  trust leg odom (it tracks truth to ~10%)
@@ -49,6 +67,44 @@ eskf_node:
                                       # speed 10% -> ~1 m drift per 10 m. 1/0.9 = 1.111.
     use_leg_yaw_bias: true            # observe gyro bias via (gyro_wz - leg wz) -> kills yaw drift
     leg_yaw_bias_noise: 0.05          # [rad/s] std of that bias pseudo-measurement
+    # Fuse that bias pseudo-measurement ONLY while barely rotating. MEASURED
+    # 2026-07-26 (two probe runs): the residual (gyro_wz - wz_leg) is ~-0.005 rad/s
+    # walking straight but +0.045..+0.052 rad/s during a wz=+0.4 turn, because
+    # wz_leg carries a rotation-dependent scale error. A gyro bias is a constant, so
+    # a residual that tracks |wz| is NOT bias — fusing it injects ~+0.05 rad/s
+    # (~2.9 deg/s) of false bias at every corner, i.e. ~10 deg of heading error per
+    # 4 s turn. Straight-leg |wz| stays under ~0.12 (square_test steers with
+    # wz=1.2*herr, herr<0.1 rad) while turns run 0.28-0.40, so 0.10 separates them.
+    # Set very large (e.g. 100) to disable the gate for an A/B run.
+    bias_update_max_wz: 0.10          # [rad/s]
+
+    # --- Degenerate leg-odometry gate (2026-07-26)
+    # champ::Odometry::getVelocities early-returns HARD ZEROS for linear.x,
+    # linear.y AND angular.z whenever all four or zero feet are in contact
+    # ("nothing to calculate", odometry.h:97). gait.yaml's stance_duration 0.25
+    # means a trot spends much of each cycle with no foot planted, so a large
+    # share of the 50 Hz /odom/raw samples are exactly (0,0,0) — a NO-INFORMATION
+    # flag, not a measurement. Fusing them:
+    #   * drags velocity toward zero, which leg_odom_scale CANNOT undo (it
+    #     multiplies zero) -> the ~11% speed under-read;
+    #   * feeds correctGyroBias(gyro_wz - 0), i.e. asserts the ENTIRE gyro yaw
+    #     rate is bias, at a tight R -> corrupts yaw integration in proportion to
+    #     |wz|, so it is nearly invisible on straight legs and ruinous at turns.
+    # Set false to restore the old fuse-everything behaviour for an A/B run.
+    leg_odom_gate_degenerate: true
+    # A genuinely stationary robot ALSO reports (0,0,0) (champ plants all four
+    # feet when the robot holds still), and there the zero IS information — a
+    # zero-velocity update, and the best gyro-bias observation available. The two
+    # are told apart by DURATION: a trot's no-contact window is a fraction of a
+    # gait cycle, while standing produces an unbroken run of zeros. Note this is
+    # deliberately NOT based on cmd_vel going quiet — teleop_twist_keyboard
+    # publishes only on keypress, so a stale command does not mean a stopped robot.
+    degenerate_hold_sec: 0.3          # [s] zeros lasting longer => really stopped
+    zupt_vel_noise: 0.02              # [m/s] tight R for a genuine ZUPT
+    # cmd_vel acts only as a veto: a FRESH command asking for motion rules out a
+    # ZUPT. It can never on its own promote zeros to a measurement.
+    stationary_cmd_eps: 0.01          # |cmd| at/above this => commanding motion
+    cmd_vel_stale_sec: 0.5            # older than this => no opinion either way
     gps_pos_noise: 0.5                # [m]    ~u-blox horizontal
     vz_zero_noise: 0.3                # [m/s]  vz≈0 vertical pseudo-measurement (allows bob)
 
