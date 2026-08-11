@@ -434,17 +434,40 @@ Read the YAW row, not the position row: the arms track each other to ~0.1 m for 
 vs 0.63 m; t=237 s: 5.3 vs 15.0 deg → 2.54 vs 5.82 m). Position error is the yaw error
 integrated along the path, as always here.
 
-**Why an R_leg change moves YAW at all** (the thing to not re-derive): inflating `R_leg`
-weakens `correctLegOdom`, and although the yaw direction `δv = δψ·(-v_y, v_x)` is exactly
-unobservable to it (§0 HEADLINE 2), the *rest* of that update is not — a weaker leg
-correction means less of everything, so psi is left running closer to open-loop gyro
-integration. The slip arm's `r_leg_yaw_bias` is NOT scaled by slip (checked
-`legCovarianceForUpdate` — only `R_leg` is), so this is not the bias path.
+**Why an R_leg change moves YAW at all** (the thing to not re-derive): `correctLegOdom`'s
+Jacobian has `H[:,PSI] = dRz(-psi)/dpsi @ v_world`, which is nonzero whenever the robot is
+MOVING. Only the direction `δv = δψ·(-v_y, v_x)` is unobservable (§0 HEADLINE 2); its
+orthogonal complement IS measured, so each leg-odom update applies a restoring pull on psi
+toward the heading implied by the measured body velocity. Inflating `R_leg` turns that
+spring down. It is NOT the gyro-bias path — `r_leg_yaw_bias` is not scaled by slip (checked
+`legCovarianceForUpdate`; only `R_leg` is).
 
-**Do not conclude the slip model is bad from this.** n=1, and run-to-run variance is 4-97
-deg of yaw error at fixed config. What this run DOES establish: the plumbing works (both
-arms 25,982 msgs at 100.0 Hz off one sensor stream, 1,298 CSV rows, both columns populated),
-and inflating `R_leg` on this terrain costs yaw stability.
+**But that mechanism does NOT explain a 2.6 vs 13.6 deg gap.** `scripts/slip_yaw_experiment.py`
+(offline, NumPy twin, no ROS/gz) injects one identical heading kick into filters differing
+only in `R_leg`, over 40 seeds:
+
+| R_leg | mean \|final yaw err\| | recovered from the kick | worse than baseline |
+|---|---|---|---|
+| 1.00x | 11.90 deg | **16/40** | — |
+| 1.44x | 11.66 deg | 15/40 | 19/40 |
+| 1.82x | 11.47 deg | 12/40 | 19/40 |
+| 2.25x | 11.41 deg | 12/40 | 19/40 |
+| 4.00x | 11.66 deg | **10/40** | 20/40 |
+
+The restoring pull is **conditional**: it only works while `v_world` is still anchored near
+truth. Once `(v_world, psi)` rotate together into the unobservable direction the residual
+vanishes and nothing pulls heading back — for EITHER arm; baseline fails to recover in
+24/40 seeds. Inflating `R_leg` monotonically lowers the recovery *probability*, but leaves
+the final error a **coin flip in both directions** (worse in ~19/40 — noise).
+
+So the honest reading of the run: the sim realization was identical for both arms (same
+sensor stream), so the 2.6-vs-13.6 gap IS downstream of `R_leg` — but via which *basin* the
+filter fell into, not via a systematic penalty. A small R change flips that basin either
+way. **An earlier version of this entry said "inflating R_leg costs yaw stability" — that
+overstated a single seed and a single run; the 40-seed sweep does not support it.**
+
+What the run DOES establish: the plumbing works (both arms 25,982 msgs at 100.0 Hz off one
+sensor stream, 1,298 CSV rows, both columns populated).
 
 **Gap found and fixed the same day**: the run recorded the slip model's *effect* but not its
 *score*, so "detects slip" and "de-weights leg odometry everywhere" were indistinguishable.
