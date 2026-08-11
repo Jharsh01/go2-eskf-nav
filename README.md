@@ -27,6 +27,11 @@ localization-and-navigation pipeline on a differential-drive robot:
 |---------|------|
 | `ekf_estimator`  | 5-state EKF fusing IMU + wheel odom + LiDAR scan-matching |
 | `motion_planner` | A*, Dijkstra, RRT, RRT*, PRM + Pure Pursuit follower      |
+| `go2_eskf`       | 8-state error-state EKF for the Unitree Go2 quadruped (IMU + leg odometry + GPS, slip-adaptive `R`) |
+
+The Go2 estimator's full derivation — the strapdown physics, the `F` and `H` Jacobians,
+`Q`/`R`, the Joseph update, and an annotated flow chart — is in
+[`src/go2_eskf/README.md`](src/go2_eskf/README.md#how-the-estimator-works--physics-flow-and-every-equation).
 
 ## Build
 

@@ -81,11 +81,22 @@ Error-state transition `F = ∂δx_{k+1}/∂δx_k` (non-identity blocks):
 ∂ψ/∂b_g = −dt
 ```
 
-Discrete process noise `Q` from IMU noise densities (`σ_a`, `σ_g`, `σ_bg`):
+Discrete process noise `Q`. `σ_a`, `σ_g`, `σ_bg` are **continuous-time densities**, so
+every term integrates as `σ² dt` — the standard white-noise-acceleration model, including
+the p–v cross-covariance:
 
 ```
-Q_pp = I₃·(¼ σ_a² dt⁴)   Q_vv = I₃·(σ_a² dt²)   Q_ψψ = σ_g² dt²   Q_bb = σ_bg² dt
+Q_pp = I₃·(σ_a² dt³/3)   Q_pv = Q_vp = I₃·(σ_a² dt²/2)   Q_vv = I₃·(σ_a² dt)
+Q_ψψ = (σ_g² + (σ_gs·ω_z)²)·dt                            Q_bb = σ_bg² dt
 ```
+
+The `(σ_gs·ω_z)²` term is deliberate: the dominant yaw-rate error here is a *scale*
+error, not white noise (`ω_gyro/ω_truth` measured 0.830 and 0.964 during turns), so
+heading uncertainty grows while turning — which is when the error actually enters.
+
+> Earlier revisions of this file documented `Q_pp = ¼σ_a²dt⁴`, `Q_vv = σ_a²dt²`,
+> `Q_ψψ = σ_g²dt²` — the per-SAMPLE convention, mixed inconsistently with a `dt` bias
+> term and 100× too small for ψ at dt=0.01. See the comment at `eskf_core.cpp:83-90`.
 
 Covariance: `P ← F P Fᵀ + Q`.
 
@@ -109,6 +120,16 @@ inflated when slip is detected, so the filter leans on IMU+GPS instead.
 
 **GPS** — measures world position `[x, y]`: `h = [px, py]`, `H` selects them.
 This is the only globally-anchored sensor; it bounds long-term drift.
+
+**Gyro bias** — leg kinematics estimate yaw rate without a gyro, so the difference
+measures the bias directly: `z = ω_gyro − ω_leg`, `h = b_g`. Only fused below
+0.10 rad/s; above that the residual is a rotation-dependent scale error, not bias.
+
+**Vertical anchor** — `z = 0`, `h = v_z`. `(pz, vz)` is otherwise unobservable and
+double-integrates to infinity (measured: `pz` reached 1601 m without it).
+
+A full walkthrough of every equation, with the `H` derivation and a flow chart, is in
+the package [`README.md`](../README.md#how-the-estimator-works--physics-flow-and-every-equation).
 
 ---
 
