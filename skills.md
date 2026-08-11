@@ -413,6 +413,47 @@ Verified offline: both nodes come up and the slip weights load; the plot renders
 curves in truth/no-truth/no-slip modes; the report writes a 34-column CSV and a two-column
 estimator table. **Not yet run against the live sim** — and one run still proves nothing.
 
+### FIRST dual-arm terrain square: slip-adaptive is 2.4x WORSE (2026-08-11, n=1)
+
+First run of the two-arms-at-once setup. `./run_go2_teleop.sh --terrain --square`, stock
+gains, no `--adapt`, GPS off, commit `deeaef0`. **The robot completed all four corners** on
+the 11.3-deg-capped terrain — no stall, no fall (worst 9 s progress 52.8 cm, terrain under
+the path median 2.1 deg / max 9.8 deg, |pitch| median 2.4 deg / max 18.1 deg).
+
+| | baseline (fixed R) | slip-adaptive |
+|---|---|---|
+| ATE mean | 1.898 m | 2.917 m |
+| max / final position error | 3.506 / **2.591 m** | 6.126 / **6.121 m** |
+| yaw error mean / final | 5.9 deg / 2.6 deg | 13.5 deg / **13.6 deg** |
+| final error as % of 46.75 m path | 5.54 % | 13.09 % |
+
+Square-test's own corner errors (baseline arm): 0.254, 3.068, 3.501, 2.583 m.
+
+Read the YAW row, not the position row: the arms track each other to ~0.1 m for the first
+40 s and then separate exactly as their yaw errors separate (t=66 s: 3.6 vs 14.3 deg → 0.32
+vs 0.63 m; t=237 s: 5.3 vs 15.0 deg → 2.54 vs 5.82 m). Position error is the yaw error
+integrated along the path, as always here.
+
+**Why an R_leg change moves YAW at all** (the thing to not re-derive): inflating `R_leg`
+weakens `correctLegOdom`, and although the yaw direction `δv = δψ·(-v_y, v_x)` is exactly
+unobservable to it (§0 HEADLINE 2), the *rest* of that update is not — a weaker leg
+correction means less of everything, so psi is left running closer to open-loop gyro
+integration. The slip arm's `r_leg_yaw_bias` is NOT scaled by slip (checked
+`legCovarianceForUpdate` — only `R_leg` is), so this is not the bias path.
+
+**Do not conclude the slip model is bad from this.** n=1, and run-to-run variance is 4-97
+deg of yaw error at fixed config. What this run DOES establish: the plumbing works (both
+arms 25,982 msgs at 100.0 Hz off one sensor stream, 1,298 CSV rows, both columns populated),
+and inflating `R_leg` on this terrain costs yaw stability.
+
+**Gap found and fixed the same day**: the run recorded the slip model's *effect* but not its
+*score*, so "detects slip" and "de-weights leg odometry everywhere" were indistinguishable.
+`run_report.py` now subscribes `/eskf_slip/slip` (optional), logs a `slip_score` CSV column,
+and prints mean/median/range plus the implied `R_leg` inflation factor. **A narrow score
+range = a blanket de-weighting, which would explain the yaw cost with none of the benefit.**
+Check that line first on the next terrain run — it is the cheapest way to decide whether the
+model or the coupling is at fault.
+
 ### Terrain BLOCKER: CHAMP stalls on the start-pad blend ramp at ~12 deg (2026-08-02)
 
 `square_test` aborted 84 s into a terrain run, 0/4 corners done:

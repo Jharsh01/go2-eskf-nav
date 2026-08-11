@@ -50,6 +50,7 @@ from collections import deque
 import rclpy
 from geometry_msgs.msg import Pose, Twist
 from nav_msgs.msg import Odometry
+from std_msgs.msg import Float64
 from rclpy.clock import Clock, ClockType
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -165,6 +166,7 @@ class RunReport(Node):
         # --- latest sample of everything, merged into one CSV row at csv_hz
         self.gt = self.est = self.leg = None
         self.est_slip = None            # slip-adaptive arm (/eskf_slip/odom)
+        self.slip_score = None          # latest slip score (/eskf_slip/slip)
         self.imu = None
         self.cmd = (0.0, 0.0)
         self.body_pose = None
@@ -184,6 +186,7 @@ class RunReport(Node):
         self.prev_xy = None
         self.err_pos, self.err_yaw = [], []
         self.err_pos_slip, self.err_yaw_slip = [], []
+        self.slip_scores = []
         self.optional = set()           # topics whose absence is not a fault
         self.slopes, self.elevs = [], []
         self.steepest = None            # (slope_deg, t, x, y)
@@ -206,6 +209,10 @@ class RunReport(Node):
         # Second estimator arm (slip-adaptive leg covariance), only up when the
         # launcher started it — optional, so its absence isn't flagged as a fault.
         self.sub(Odometry, "/eskf_slip/odom", self.on_est_slip, qd, optional=True)
+        # The slip SCORE, not just its effect. Without it you cannot tell a model
+        # that detects slip from one that inflates R_leg everywhere — and those two
+        # produce the same (worse) trajectory when yaw is the error that matters.
+        self.sub(Float64, "/eskf_slip/slip", self.on_slip, qd, optional=True)
         self.sub(Odometry, "/odom/raw", self.on_leg, qd)
         self.sub(Imu, "/imu/data", self.on_imu, qos_profile_sensor_data)
         self.sub(Twist, "/cmd_vel", self.on_cmd, qd)
@@ -257,6 +264,9 @@ class RunReport(Node):
     def on_est_slip(self, m):
         p, q = m.pose.pose.position, m.pose.pose.orientation
         self.est_slip = (p.x, p.y, rpy(q)[2])
+
+    def on_slip(self, m):
+        self.slip_score = m.data
 
     def on_leg(self, m):
         t = m.twist.twist
@@ -355,6 +365,8 @@ class RunReport(Node):
             self.err_pos.append(math.hypot(self.est[0] - self.gt[0],
                                            self.est[1] - self.gt[1]))
             self.err_yaw.append(abs(wrap(self.est[2] - self.gt[5])))
+        if self.slip_score is not None:
+            self.slip_scores.append(self.slip_score)
         if self.gt is not None and self.est_slip is not None:
             self.err_pos_slip.append(math.hypot(self.est_slip[0] - self.gt[0],
                                                 self.est_slip[1] - self.gt[1]))
@@ -377,6 +389,7 @@ class RunReport(Node):
                *es,
                self.err_pos_slip[-1] if self.err_pos_slip else None,
                self.err_yaw_slip[-1] if self.err_yaw_slip else None,
+               self.slip_score,
                *lg, *im, *self.cmd, *bp,
                "".join("1" if c else "0" for c in self.contacts) if self.contacts else None,
                jmax, jmean, terr_z, terr_s]
@@ -430,6 +443,7 @@ class RunReport(Node):
         head = ["t", "gt_x", "gt_y", "gt_z", "gt_roll", "gt_pitch", "gt_yaw",
                 "gt_vx", "gt_wz", "est_x", "est_y", "est_yaw", "err_pos", "err_yaw",
                 "slip_x", "slip_y", "slip_yaw", "slip_err_pos", "slip_err_yaw",
+                "slip_score",
                 "leg_vx", "leg_wz", "leg_degenerate", "imu_pitch", "imu_roll",
                 "accel_mag", "cmd_vx", "cmd_wz", "body_pose_x", "body_pose_z",
                 "contacts_lf_rf_lh_rh", "joint_err_max", "joint_err_mean",
@@ -617,6 +631,20 @@ class RunReport(Node):
                   "`--no-slip`) to get the comparison column.")
                 A("")
             else:
+                if self.slip_scores:
+                    s = stat(self.slip_scores)
+                    lo, hi = min(self.slip_scores), max(self.slip_scores)
+                    A(f"Slip score (`/eskf_slip/slip`): mean {s[0]:.3f}, median "
+                      f"{s[1]:.3f}, range {lo:.3f}..{hi:.3f} → `R_leg` inflated "
+                      f"{(1 + lo) ** 2:.2f}x..{(1 + hi) ** 2:.2f}x (λ=1). A narrow "
+                      "range means the model is de-weighting leg odometry "
+                      "EVERYWHERE, not detecting slip.")
+                    A("")
+                else:
+                    A("No `/eskf_slip/slip` samples — the score was not recorded, "
+                      "so a model that detects slip cannot be told apart from one "
+                      "that inflates `R_leg` uniformly.")
+                    A("")
                 d = self.err_pos_slip[-1] - self.err_pos[-1]
                 A(f"Slip-adaptive final position error is {abs(d):.3f} m "
                   f"{'WORSE' if d > 0 else 'BETTER'} than baseline on this run. "
