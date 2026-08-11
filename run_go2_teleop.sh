@@ -24,6 +24,31 @@
 #   ./run_go2_teleop.sh --software-render   # CPU (llvmpipe) rendering fallback
 #   ./run_go2_teleop.sh --obstacles        # bring the boxes/cylinders back
 #   ./run_go2_teleop.sh --terrain          # uneven terrain + low-friction patches
+#   ./run_go2_teleop.sh --adapt            # slope-adaptive body posture (/body_pose)
+#   ./run_go2_teleop.sh --stiff            # 3x joint PD gains (ros_control_stiff.yaml)
+#   ./run_go2_teleop.sh --climb            # = --terrain --adapt --stiff
+#   ./run_go2_teleop.sh --no-report        # skip the run_report/ snapshot
+#   ./run_go2_teleop.sh --no-slip          # only ONE estimator (no slip-adaptive arm)
+#
+# TWO estimators run by default: the baseline ESKF (fixed leg covariance,
+# /eskf/odom) and a second instance with the slip-adaptive covariance
+# (use_slip_model:=true, /eskf_slip/odom). They share every input and every other
+# parameter, so --plot/--square shows all THREE curves — ground truth, baseline
+# estimate, slip-adaptive estimate — on one plot with one error trace each, and
+# REPORT.md scores both arms. --no-slip goes back to a single estimator.
+#
+# EVERY run writes run_report/REPORT.md — configuration, outcome, a stall detector, the
+# terrain slope under the actual path, gait health (contact duty, joint tracking error),
+# estimator error, topic rates, and the WARN/ERROR lines from every node. It is
+# OVERWRITTEN each run, so it costs a fixed ~0.5 MB no matter how many runs you do.
+# Read it (and run_report/timeseries.csv) instead of taking screenshots.
+#
+# --adapt and --stiff are the two SLOPE fixes, and they are independent A/B arms.
+# CHAMP is blind and never publishes /body_pose, so its foot plane is frozen in the
+# base frame; --adapt runs terrain_adapt.py to supply a slope-aware posture. Separately,
+# the stock p=100 Nm/rad joint PD gives away ~3 cm of stance sag under a 15 kg robot,
+# which is stroke the climb never gets; --stiff triples it. Neither is validated yet —
+# A/B them one at a time (skills.md section 7), not together.
 #
 # World: defaults to the obstacle-free go2_eskf/worlds/flat.sdf (same GPS datum,
 # physics, lighting and ground plane as the vendored default.sdf, minus the five
@@ -69,6 +94,10 @@ PLOT="false"
 SQUARE="false"                               # --square: autonomous drift test, no teleop
 OBSTACLES="false"                            # --obstacles: use the vendored world WITH boxes/cylinders
 TERRAIN="false"                              # --terrain: uneven heightmap + low-friction patches
+ADAPT="false"                                # --adapt: slope-adaptive /body_pose posture
+STIFF="false"                                # --stiff: 3x joint PD gains (go2_eskf config)
+SLIP="true"                                  # --no-slip: skip the 2nd (slip-adaptive) ESKF arm
+REPORT="true"                                # --no-report to disable the run report
 RENDER="nvidia"                              # nvidia | software
 PLOT_INTERVAL="0.1"                          # plot redraw period [s] (10 Hz)
 PLOT_VIEW="10"                               # plot XY half-width [m] (13 for --square)
@@ -81,6 +110,11 @@ for arg in "$@"; do
     --square)           SQUARE="true"; PLOT="true"; PLOT_VIEW="13" ;;  # autonomous square drift test
     --obstacles)        OBSTACLES="true" ;;   # bring the boxes/cylinders back
     --terrain)          TERRAIN="true" ;;     # uneven terrain + low-friction patches (slip model)
+    --adapt)            ADAPT="true" ;;       # slope-adaptive body posture (terrain_adapt.py)
+    --stiff)            STIFF="true" ;;       # 3x joint PD gains (ros_control_stiff.yaml)
+    --climb)            TERRAIN="true"; ADAPT="true"; STIFF="true" ;;  # both slope fixes on terrain
+    --no-slip)          SLIP="false" ;;       # only the baseline (fixed-R) estimator
+    --no-report)        REPORT="false" ;;     # skip the run_report/ snapshot
     --software-render)  RENDER="software" ;;
     --light|--lite)     RVIZ="false"; PLOT_INTERVAL="0.2" ;;  # lowest load
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -144,6 +178,24 @@ if [[ "$TERRAIN" == "true" ]]; then
     exit 1; }
 fi
 
+# --- Joint PD gains -------------------------------------------------------
+# The launch's `ros_control_file` arg feeds BOTH the controller_manager params and the
+# xacro's gz_ros2_control <parameters> block, so one path switches every gain. --stiff
+# points it at the first-party stiff set; the vendored ros_control.yaml is untouched, and
+# reverting is dropping the flag. See the header of ros_control_stiff.yaml for the sag
+# arithmetic that motivates it.
+STIFF_ARG=""
+GAINS_DESC="stock (p=100)"
+if [[ "$STIFF" == "true" ]]; then
+  STIFF_YAML="$WS/install/share/go2_eskf/config/ros_control_stiff.yaml"
+  [[ -f "$STIFF_YAML" ]] || {
+    echo "ERROR: --stiff needs $STIFF_YAML" >&2
+    echo "       Build it: colcon build --packages-select go2_eskf --merge-install --symlink-install" >&2
+    exit 1; }
+  STIFF_ARG="ros_control_file:='$STIFF_YAML'"
+  GAINS_DESC="stiff (p=300, d=3.5)"
+fi
+
 # --- GPU / offscreen-rendering env for Gazebo -----------------------------
 # Gazebo's sensor-rendering thread (Ogre2) makes an OFFSCREEN GL context separate
 # from the GUI. On an NVIDIA Optimus laptop it wrongly picks the Mesa/DRI2 path
@@ -197,6 +249,15 @@ cleanup() {
   trap '' INT TERM EXIT   # no re-entry
   set +e
   echo; echo "Shutting down the Go2 stack..."
+  # FIRST, before anything is signalled: preserve the per-node stdout that $LOGDIR is
+  # about to lose. run_report.py mines it for WARN/ERROR lines on its way out, and this
+  # is the ONLY copy — the `rm -rf $LOGDIR` below is what has forced every past
+  # post-mortem back to ~/.ros/log and screenshots. Overwritten each run, so bounded.
+  if [[ "$REPORT" == "true" ]]; then
+    rm -rf "$REPORT_DIR/node_logs"
+    mkdir -p "$REPORT_DIR/node_logs"
+    cp "$LOGDIR"/*.log "$REPORT_DIR/node_logs/" 2>/dev/null
+  fi
   # SIGINT each process group first so ros2 launch stops its nodes cleanly.
   for pid in "${PIDS[@]}"; do kill -INT -- "-$pid" 2>/dev/null; done
   pkill -INT -f teleop_twist_keyboard 2>/dev/null   # lives in the terminal server
@@ -206,6 +267,7 @@ cleanup() {
   for pid in "${PIDS[@]}"; do kill -KILL -- "-$pid" 2>/dev/null; done
   pkill -KILL -f teleop_twist_keyboard 2>/dev/null
   rm -rf "$LOGDIR"
+  [[ "$REPORT" == "true" ]] && echo "Run report: $REPORT_DIR/REPORT.md"
   echo "Done."
   exit 0
 }
@@ -214,15 +276,60 @@ trap cleanup INT TERM
 echo "Workspace : $WS"
 echo "RViz      : $RVIZ    Plot: $PLOT (${PLOT_INTERVAL}s)    Rendering: $RENDER"
 echo "World     : $WORLD_DESC"
+echo "Gains     : $GAINS_DESC    Body-pose adapt: $ADAPT"
 echo "Logs      : $LOGDIR"
+
+# --- run report context ---------------------------------------------------
+# run_report.py cannot see the launcher's flags, so hand them over. Everything in
+# $REPORT_DIR is OVERWRITTEN each run: one report, bounded disk, no screenshots needed.
+REPORT_DIR="$WS/run_report"
+if [[ "$REPORT" == "true" ]]; then
+  mkdir -p "$REPORT_DIR"
+  {
+    echo "Command line: $0 $*"
+    echo "World: $WORLD_DESC"
+    echo "World file: $WORLD"
+    echo "Joint gains: $GAINS_DESC"
+    echo "Body-pose adapt: $ADAPT"
+    echo "Square test: $SQUARE"
+    echo "Slip arm: $SLIP"
+    echo "Rendering: $RENDER"
+    echo "Gait: $(sed -n 's/^ *\(swing_height\|nominal_height\|stance_duration\|max_linear_velocity_x\) *: *\(.*\)/\1=\2/p' \
+             "$WS/install/share/unitree_go2_sim/config/gait/gait.yaml" 2>/dev/null | tr '\n' ' ')"
+  } > "$REPORT_DIR/context.txt"
+  echo "Report    : $REPORT_DIR/REPORT.md  (overwritten each run)"
+fi
 echo
 
 # --- 1. Gazebo + CHAMP sim ------------------------------------------------
 # Sim + controllers get FULL CPU priority; everything else is staggered behind
 # it and niced, so they don't pile onto Gazebo's boot (the load spike you saw).
 start_bg sim \
-  "$RENDER_ENV ros2 launch unitree_go2_sim unitree_go2_launch.py use_sim_time:=true rviz:=$RVIZ world:='$WORLD'"
+  "$RENDER_ENV ros2 launch unitree_go2_sim unitree_go2_launch.py use_sim_time:=true rviz:=$RVIZ world:='$WORLD' $STIFF_ARG"
 SIM_PID=$REPLY
+
+# --- 1b. Slope-adaptive body posture (optional) ---------------------------
+# CHAMP never publishes /body_pose, so its foot plane is fixed in the base frame and
+# it has no terrain adaptation at all. terrain_adapt.py supplies the posture command.
+# It must be up before the robot leaves the flat start pad; the gait warm-up gate is
+# enough. With its gains at 0 it is a no-op, so this is a strict A/B arm.
+if [[ "$ADAPT" == "true" ]]; then
+  start_bg adapt \
+    "$WAIT_READY; \
+     exec $LOW_PRIO ros2 run go2_eskf terrain_adapt.py --ros-args -p use_sim_time:=true"
+  ADAPT_PID=$REPLY
+fi
+
+# --- 1c. Run report (default on) ------------------------------------------
+# Starts immediately, not behind $WAIT_READY: a run that never gets a controller is
+# exactly the case that most needs a report, and topic-health rows are only honest if
+# the recorder was listening from t=0.
+if [[ "$REPORT" == "true" ]]; then
+  start_bg report \
+    "exec $LOW_PRIO ros2 run go2_eskf run_report.py --ros-args \
+       -p use_sim_time:=true -p out_dir:='$REPORT_DIR'"
+  REPORT_PID=$REPLY
+fi
 
 # --- 2. Ground-truth bridge (optional) — wait for the sim clock first ------
 if [[ "$PLOT" == "true" ]]; then
@@ -233,20 +340,31 @@ if [[ "$PLOT" == "true" ]]; then
 fi
 
 # --- 3. Error-state EKF (waits for its inputs before starting) ------------
+# With SLIP=true a SECOND instance runs alongside it (node eskf_slip_node,
+# use_slip_model:=true) publishing /eskf_slip/odom. Same node, same inputs, same
+# tuning — only the leg-odometry covariance differs — so the two curves in the
+# plot are a clean A/B of the slip model on one run.
 start_bg eskf \
   "$WAIT_READY; \
    echo 'Starting ESKF (GPS OFF — the sim navsat is broken:'; \
    echo '  ~0.5 deg / ~55 km position noise, which would wreck the estimate).'; \
-   ros2 launch go2_eskf eskf.launch.py use_sim_time:=true use_gps:=false"
+   echo 'Slip-adaptive second arm: $SLIP  (-> /eskf_slip/odom)'; \
+   ros2 launch go2_eskf eskf.launch.py use_sim_time:=true use_gps:=false slip:=$SLIP"
 ESKF_PID=$REPLY
 
 # --- 4. Live trajectory plot (optional) — start only once the ESKF publishes,
 #        niced and throttled so it never competes with the sim. --------------
+#        Three curves: ground truth, baseline estimate, slip-adaptive estimate
+#        (the last only when the second arm is running — --wait-slip drops it
+#        from the legend rather than drawing an empty line).
 if [[ "$PLOT" == "true" ]]; then
+  PLOT_SLIP_ARG="--no-slip"
+  [[ "$SLIP" == "true" ]] && PLOT_SLIP_ARG="--wait-slip 30"
   start_bg plot \
     "until timeout 5 ros2 topic echo /eskf/odom --once >/dev/null 2>&1; do :; done; \
      exec $LOW_PRIO ros2 run go2_eskf plot_trajectory.py --ros-args \
-       -p use_sim_time:=true -- --interval $PLOT_INTERVAL --view $PLOT_VIEW"
+       -p use_sim_time:=true -- --interval $PLOT_INTERVAL --view $PLOT_VIEW \
+       $PLOT_SLIP_ARG"
   PLOT_PID=$REPLY
 fi
 

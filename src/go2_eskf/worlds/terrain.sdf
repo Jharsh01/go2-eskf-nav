@@ -23,11 +23,11 @@
   a world-relative path nor GZ_SIM_RESOURCE_PATH for heightmaps), so this file is
   machine-specific. Re-run the generator after moving the workspace.
 
-    terrain      40 x 40 m, 257x257 samples (15.6 cm/cell), relief 0.70 m
-    slope        median 3.6 deg, 95th pct 7.5 deg, max 19.5 deg
-    square path  elevation 0.00..0.56 m, slope median 3.7 deg / max 16.6 deg
+    terrain      40 x 40 m, 257x257 samples (15.6 cm/cell), relief 0.40 m
+    slope        median 2.0 deg, 95th pct 4.3 deg, max 11.3 deg
+    square path  elevation 0.00..0.31 m, slope median 2.1 deg / max 9.6 deg
     start pad    flat (elevation 0.000 m) out to r=1.5 m, blended to r=4.0 m
-    slip patches 4 of 3.0 x 3.0 m at mu=0.3, tiled at 0.40 m, 12 mm proud; worst step onto a patch 2.8 cm
+    slip patches 4 of 3.0 x 3.0 m at mu=0.3, tiled at 0.40 m, 12 mm proud; worst step onto a patch 2.1 cm
 -->
 <sdf version="1.8">
   <world name="default">
@@ -81,7 +81,7 @@
           <geometry>
             <heightmap>
               <uri>file:///home/harsh/Desktop/robotics_ws/src/go2_eskf/worlds/terrain_height.png</uri>
-              <size>40.0 40.0 0.7</size>
+              <size>40.0 40.0 0.3956134387679842</size>
               <pos>0 0 0</pos>
             </heightmap>
           </geometry>
@@ -90,7 +90,7 @@
           <geometry>
             <heightmap>
               <uri>file:///home/harsh/Desktop/robotics_ws/src/go2_eskf/worlds/terrain_height.png</uri>
-              <size>40.0 40.0 0.7</size>
+              <size>40.0 40.0 0.3956134387679842</size>
               <pos>0 0 0</pos>
               <texture>
                 <diffuse>file:///home/harsh/Desktop/robotics_ws/src/go2_eskf/worlds/terrain_diffuse.png</diffuse>
@@ -112,7 +112,7 @@
       <static>true</static>
       <pose>0 0 0 0 0 0</pose>
         <link name="t_0_0">
-          <pose>3.6875 -1.3125 0.4019 -0.04764 0.06701 0</pose>
+          <pose>3.6875 -1.3125 0.2237 -0.02698 0.03791 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -129,7 +129,7 @@
           </visual>
         </link>
         <link name="t_0_1">
-          <pose>3.6875 -0.9375 0.3780 -0.04565 -0.00351 0</pose>
+          <pose>3.6875 -0.9375 0.2101 -0.02581 -0.00199 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -146,7 +146,7 @@
           </visual>
         </link>
         <link name="t_0_2">
-          <pose>3.6875 -0.5625 0.3669 -0.04775 -0.00141 0</pose>
+          <pose>3.6875 -0.5625 0.2039 -0.02700 -0.00079 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -163,7 +163,7 @@
           </visual>
         </link>
         <link name="t_0_3">
-          <pose>3.6875 -0.1875 0.3340 -0.09318 0.01511 0</pose>
+          <pose>3.6875 -0.1875 0.1853 -0.05277 0.00854 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -180,7 +180,7 @@
           </visual>
         </link>
         <link name="t_0_4">
-          <pose>3.6875 0.1875 0.3128 -0.02108 0.00281 0</pose>
+          <pose>3.6875 0.1875 0.1733 -0.01191 0.00159 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -197,7 +197,7 @@
           </visual>
         </link>
         <link name="t_0_5">
-          <pose>3.6875 0.5625 0.3045 -0.04736 0.03863 0</pose>
+          <pose>3.6875 0.5625 0.1686 -0.02680 0.02184 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -214,7 +214,7 @@
           </visual>
         </link>
         <link name="t_0_6">
-          <pose>3.6875 0.9375 0.2797 -0.04386 0.03863 0</pose>
+          <pose>3.6875 0.9375 0.1546 -0.02481 0.02184 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -231,7 +231,7 @@
           </visual>
         </link>
         <link name="t_0_7">
-          <pose>3.6875 1.3125 0.2774 -0.00211 0.04600 0</pose>
+          <pose>3.6875 1.3125 0.1533 -0.00119 0.02601 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -248,7 +248,7 @@
           </visual>
         </link>
         <link name="t_1_0">
-          <pose>4.0625 -1.3125 0.3609 -0.01744 0.12237 0</pose>
+          <pose>4.0625 -1.3125 0.2005 -0.00990 0.06939 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -265,7 +265,7 @@
           </visual>
         </link>
         <link name="t_1_1">
-          <pose>4.0625 -0.9375 0.3571 -0.00876 0.07889 0</pose>
+          <pose>4.0625 -0.9375 0.1983 -0.00496 0.04465 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -282,7 +282,7 @@
           </visual>
         </link>
         <link name="t_1_2">
-          <pose>4.0625 -0.5625 0.3406 -0.07667 0.11197 0</pose>
+          <pose>4.0625 -0.5625 0.1890 -0.04357 0.06346 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -299,7 +299,7 @@
           </visual>
         </link>
         <link name="t_1_3">
-          <pose>4.0625 -0.1875 0.3099 -0.05766 0.09285 0</pose>
+          <pose>4.0625 -0.1875 0.1717 -0.03271 0.05258 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -316,7 +316,7 @@
           </visual>
         </link>
         <link name="t_1_4">
-          <pose>4.0625 0.1875 0.2945 -0.05596 0.08413 0</pose>
+          <pose>4.0625 0.1875 0.1630 -0.03173 0.04762 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -333,7 +333,7 @@
           </visual>
         </link>
         <link name="t_1_5">
-          <pose>4.0625 0.5625 0.2665 -0.06786 0.12755 0</pose>
+          <pose>4.0625 0.5625 0.1471 -0.03860 0.07236 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -350,7 +350,7 @@
           </visual>
         </link>
         <link name="t_1_6">
-          <pose>4.0625 0.9375 0.2528 -0.01750 0.08762 0</pose>
+          <pose>4.0625 0.9375 0.1394 -0.00992 0.04960 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -367,7 +367,7 @@
           </visual>
         </link>
         <link name="t_1_7">
-          <pose>4.0625 1.3125 0.2478 -0.02100 0.08587 0</pose>
+          <pose>4.0625 1.3125 0.1366 -0.01190 0.04861 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -384,7 +384,7 @@
           </visual>
         </link>
         <link name="t_2_0">
-          <pose>4.4375 -1.3125 0.3182 0.00909 0.09702 0</pose>
+          <pose>4.4375 -1.3125 0.1764 0.00516 0.05495 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -401,7 +401,7 @@
           </visual>
         </link>
         <link name="t_2_1">
-          <pose>4.4375 -0.9375 0.3269 -0.00875 0.08762 0</pose>
+          <pose>4.4375 -0.9375 0.1813 -0.00496 0.04960 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -418,7 +418,7 @@
           </visual>
         </link>
         <link name="t_2_2">
-          <pose>4.4375 -0.5625 0.3011 -0.09110 0.08797 0</pose>
+          <pose>4.4375 -0.5625 0.1667 -0.05172 0.04980 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -435,7 +435,7 @@
           </visual>
         </link>
         <link name="t_2_3">
-          <pose>4.4375 -0.1875 0.2800 -0.01859 0.06071 0</pose>
+          <pose>4.4375 -0.1875 0.1548 -0.01052 0.03434 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -452,7 +452,7 @@
           </visual>
         </link>
         <link name="t_2_4">
-          <pose>4.4375 0.1875 0.2643 -0.08743 0.06491 0</pose>
+          <pose>4.4375 0.1875 0.1459 -0.04957 0.03672 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -469,7 +469,7 @@
           </visual>
         </link>
         <link name="t_2_5">
-          <pose>4.4375 0.5625 0.2276 -0.05181 0.07540 0</pose>
+          <pose>4.4375 0.5625 0.1252 -0.02936 0.04267 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -486,7 +486,7 @@
           </visual>
         </link>
         <link name="t_2_6">
-          <pose>4.4375 0.9375 0.2275 0.00877 0.04565 0</pose>
+          <pose>4.4375 0.9375 0.1251 0.00496 0.02581 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -503,7 +503,7 @@
           </visual>
         </link>
         <link name="t_2_7">
-          <pose>4.4375 1.3125 0.2165 -0.04973 0.07086 0</pose>
+          <pose>4.4375 1.3125 0.1189 -0.02817 0.04009 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -520,7 +520,7 @@
           </visual>
         </link>
         <link name="t_3_0">
-          <pose>4.8125 -1.3125 0.2879 -0.00000 0.06841 0</pose>
+          <pose>4.8125 -1.3125 0.1592 -0.00000 0.03870 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -537,7 +537,7 @@
           </visual>
         </link>
         <link name="t_3_1">
-          <pose>4.8125 -0.9375 0.2962 -0.00175 0.07191 0</pose>
+          <pose>4.8125 -0.9375 0.1639 -0.00099 0.04069 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -554,7 +554,7 @@
           </visual>
         </link>
         <link name="t_3_2">
-          <pose>4.8125 -0.5625 0.2751 -0.06552 0.05196 0</pose>
+          <pose>4.8125 -0.5625 0.1520 -0.03710 0.02938 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -571,7 +571,7 @@
           </visual>
         </link>
         <link name="t_3_3">
-          <pose>4.8125 -0.1875 0.2621 -0.01088 0.04249 0</pose>
+          <pose>4.8125 -0.1875 0.1447 -0.00615 0.02402 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -588,7 +588,7 @@
           </visual>
         </link>
         <link name="t_3_4">
-          <pose>4.8125 0.1875 0.2455 -0.09172 0.04109 0</pose>
+          <pose>4.8125 0.1875 0.1353 -0.05197 0.02323 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -605,7 +605,7 @@
           </visual>
         </link>
         <link name="t_3_5">
-          <pose>4.8125 0.5625 0.2116 -0.03407 0.01300 0</pose>
+          <pose>4.8125 0.5625 0.1161 -0.01926 0.00735 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -622,7 +622,7 @@
           </visual>
         </link>
         <link name="t_3_6">
-          <pose>4.8125 0.9375 0.2176 0.00176 0.01757 0</pose>
+          <pose>4.8125 0.9375 0.1195 0.00099 0.00993 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -639,7 +639,7 @@
           </visual>
         </link>
         <link name="t_3_7">
-          <pose>4.8125 1.3125 0.1982 -0.04563 0.02635 0</pose>
+          <pose>4.8125 1.3125 0.1085 -0.02581 0.01489 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -656,7 +656,7 @@
           </visual>
         </link>
         <link name="t_4_0">
-          <pose>5.1875 -1.3125 0.2641 -0.02279 0.06141 0</pose>
+          <pose>5.1875 -1.3125 0.1458 -0.01290 0.03474 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -673,7 +673,7 @@
           </visual>
         </link>
         <link name="t_4_1">
-          <pose>5.1875 -0.9375 0.2698 0.01752 0.07016 0</pose>
+          <pose>5.1875 -0.9375 0.1490 0.00992 0.03970 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -690,7 +690,7 @@
           </visual>
         </link>
         <link name="t_4_2">
-          <pose>5.1875 -0.5625 0.2577 -0.05677 0.05546 0</pose>
+          <pose>5.1875 -0.5625 0.1422 -0.03214 0.03137 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -707,7 +707,7 @@
           </visual>
         </link>
         <link name="t_4_3">
-          <pose>5.1875 -0.1875 0.2456 -0.01053 0.04880 0</pose>
+          <pose>5.1875 -0.1875 0.1354 -0.00596 0.02760 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -724,7 +724,7 @@
           </visual>
         </link>
         <link name="t_4_4">
-          <pose>5.1875 0.1875 0.2331 -0.05963 0.03372 0</pose>
+          <pose>5.1875 0.1875 0.1283 -0.03374 0.01906 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -741,7 +741,7 @@
           </visual>
         </link>
         <link name="t_4_5">
-          <pose>5.1875 0.5625 0.2111 -0.02775 0.00351 0</pose>
+          <pose>5.1875 0.5625 0.1158 -0.01569 0.00199 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -758,7 +758,7 @@
           </visual>
         </link>
         <link name="t_4_6">
-          <pose>5.1875 0.9375 0.2083 -0.02458 0.02810 0</pose>
+          <pose>5.1875 0.9375 0.1143 -0.01390 0.01589 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -775,7 +775,7 @@
           </visual>
         </link>
         <link name="t_4_7">
-          <pose>5.1875 1.3125 0.1940 -0.01932 0.00246 0</pose>
+          <pose>5.1875 1.3125 0.1062 -0.01092 0.00139 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -792,7 +792,7 @@
           </visual>
         </link>
         <link name="t_5_0">
-          <pose>5.5625 -1.3125 0.2411 -0.02419 0.06351 0</pose>
+          <pose>5.5625 -1.3125 0.1328 -0.01369 0.03593 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -809,7 +809,7 @@
           </visual>
         </link>
         <link name="t_5_1">
-          <pose>5.5625 -0.9375 0.2418 -0.00175 0.08413 0</pose>
+          <pose>5.5625 -0.9375 0.1332 -0.00099 0.04762 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -826,7 +826,7 @@
           </visual>
         </link>
         <link name="t_5_2">
-          <pose>5.5625 -0.5625 0.2303 -0.04579 0.09459 0</pose>
+          <pose>5.5625 -0.5625 0.1267 -0.02597 0.05357 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -843,7 +843,7 @@
           </visual>
         </link>
         <link name="t_5_3">
-          <pose>5.5625 -0.1875 0.2198 -0.01050 0.08832 0</pose>
+          <pose>5.5625 -0.1875 0.1208 -0.00595 0.05000 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -860,7 +860,7 @@
           </visual>
         </link>
         <link name="t_5_4">
-          <pose>5.5625 0.1875 0.2130 -0.03150 0.08413 0</pose>
+          <pose>5.5625 0.1875 0.1169 -0.01785 0.04762 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -877,7 +877,7 @@
           </visual>
         </link>
         <link name="t_5_5">
-          <pose>5.5625 0.5625 0.2000 -0.02455 0.06001 0</pose>
+          <pose>5.5625 0.5625 0.1095 -0.01389 0.03394 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -894,7 +894,7 @@
           </visual>
         </link>
         <link name="t_5_6">
-          <pose>5.5625 0.9375 0.1929 -0.01754 0.05791 0</pose>
+          <pose>5.5625 0.9375 0.1056 -0.00992 0.03275 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -911,7 +911,7 @@
           </visual>
         </link>
         <link name="t_5_7">
-          <pose>5.5625 1.3125 0.1898 0.00667 0.03512 0</pose>
+          <pose>5.5625 1.3125 0.1038 0.00377 0.01986 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -928,7 +928,7 @@
           </visual>
         </link>
         <link name="t_6_0">
-          <pose>5.9375 -1.3125 0.2155 -0.01226 0.07365 0</pose>
+          <pose>5.9375 -1.3125 0.1183 -0.00694 0.04168 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -945,7 +945,7 @@
           </visual>
         </link>
         <link name="t_6_1">
-          <pose>5.9375 -0.9375 0.2061 -0.06102 0.11370 0</pose>
+          <pose>5.9375 -0.9375 0.1130 -0.03467 0.06445 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -962,7 +962,7 @@
           </visual>
         </link>
         <link name="t_6_2">
-          <pose>5.9375 -0.5625 0.1847 -0.03304 0.14136 0</pose>
+          <pose>5.9375 -0.5625 0.1009 -0.01880 0.08025 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -979,7 +979,7 @@
           </visual>
         </link>
         <link name="t_6_3">
-          <pose>5.9375 -0.1875 0.1814 -0.01396 0.11544 0</pose>
+          <pose>5.9375 -0.1875 0.0990 -0.00793 0.06544 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -996,7 +996,7 @@
           </visual>
         </link>
         <link name="t_6_4">
-          <pose>5.9375 0.1875 0.1699 -0.02259 0.14652 0</pose>
+          <pose>5.9375 0.1875 0.0925 -0.01286 0.08321 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1013,7 +1013,7 @@
           </visual>
         </link>
         <link name="t_6_5">
-          <pose>5.9375 0.5625 0.1677 -0.00523 0.11717 0</pose>
+          <pose>5.9375 0.5625 0.0913 -0.00297 0.06643 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1030,7 +1030,7 @@
           </visual>
         </link>
         <link name="t_6_6">
-          <pose>5.9375 0.9375 0.1622 -0.00874 0.10502 0</pose>
+          <pose>5.9375 0.9375 0.0882 -0.00496 0.05950 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1047,7 +1047,7 @@
           </visual>
         </link>
         <link name="t_6_7">
-          <pose>5.9375 1.3125 0.1644 0.02449 0.09285 0</pose>
+          <pose>5.9375 1.3125 0.0894 0.01388 0.05258 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1064,7 +1064,7 @@
           </visual>
         </link>
         <link name="t_7_0">
-          <pose>6.3125 -1.3125 0.1869 -0.01960 0.08448 0</pose>
+          <pose>6.3125 -1.3125 0.1022 -0.01111 0.04782 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1081,7 +1081,7 @@
           </visual>
         </link>
         <link name="t_7_1">
-          <pose>6.3125 -0.9375 0.1562 -0.11094 0.13619 0</pose>
+          <pose>6.3125 -0.9375 0.0848 -0.06327 0.07729 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1098,7 +1098,7 @@
           </visual>
         </link>
         <link name="t_7_2">
-          <pose>6.3125 -0.5625 0.1319 -0.00871 0.12928 0</pose>
+          <pose>6.3125 -0.5625 0.0711 -0.00495 0.07334 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1115,7 +1115,7 @@
           </visual>
         </link>
         <link name="t_7_3">
-          <pose>6.3125 -0.1875 0.1322 -0.04107 0.13274 0</pose>
+          <pose>6.3125 -0.1875 0.0712 -0.02336 0.07532 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1132,7 +1132,7 @@
           </visual>
         </link>
         <link name="t_7_4">
-          <pose>6.3125 0.1875 0.1078 -0.03051 0.16059 0</pose>
+          <pose>6.3125 0.1875 0.0575 -0.01740 0.09129 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1149,7 +1149,7 @@
           </visual>
         </link>
         <link name="t_7_5">
-          <pose>6.3125 0.5625 0.1189 0.03275 0.12790 0</pose>
+          <pose>6.3125 0.5625 0.0637 0.01862 0.07255 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1166,7 +1166,7 @@
           </visual>
         </link>
         <link name="t_7_6">
-          <pose>6.3125 0.9375 0.1177 -0.02090 0.13101 0</pose>
+          <pose>6.3125 0.9375 0.0631 -0.01188 0.07433 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1183,7 +1183,7 @@
           </visual>
         </link>
         <link name="t_7_7">
-          <pose>6.3125 1.3125 0.1219 0.05019 0.12063 0</pose>
+          <pose>6.3125 1.3125 0.0654 0.02852 0.06840 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1210,7 +1210,7 @@
       <static>true</static>
       <pose>0 0 0 0 0 0</pose>
         <link name="t_0_0">
-          <pose>8.6875 -6.3125 0.2949 -0.03193 -0.04775 0</pose>
+          <pose>8.6875 -6.3125 0.1632 -0.01806 -0.02700 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1227,7 +1227,7 @@
           </visual>
         </link>
         <link name="t_0_1">
-          <pose>8.6875 -5.9375 0.2747 -0.06119 -0.08587 0</pose>
+          <pose>8.6875 -5.9375 0.1518 -0.03470 -0.04861 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1244,7 +1244,7 @@
           </visual>
         </link>
         <link name="t_0_2">
-          <pose>8.6875 -5.5625 0.2588 -0.03640 -0.08448 0</pose>
+          <pose>8.6875 -5.5625 0.1428 -0.02063 -0.04782 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1261,7 +1261,7 @@
           </visual>
         </link>
         <link name="t_0_3">
-          <pose>8.6875 -5.1875 0.2415 -0.05478 -0.11023 0</pose>
+          <pose>8.6875 -5.1875 0.1330 -0.03111 -0.06247 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1278,7 +1278,7 @@
           </visual>
         </link>
         <link name="t_0_4">
-          <pose>8.6875 -4.8125 0.2285 -0.00698 -0.11301 0</pose>
+          <pose>8.6875 -4.8125 0.1257 -0.00396 -0.06405 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1295,7 +1295,7 @@
           </visual>
         </link>
         <link name="t_0_5">
-          <pose>8.6875 -4.4375 0.2298 -0.01226 -0.07365 0</pose>
+          <pose>8.6875 -4.4375 0.1264 -0.00694 -0.04168 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1312,7 +1312,7 @@
           </visual>
         </link>
         <link name="t_0_6">
-          <pose>8.6875 -4.0625 0.2198 -0.01225 -0.08762 0</pose>
+          <pose>8.6875 -4.0625 0.1208 -0.00694 -0.04960 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1329,7 +1329,7 @@
           </visual>
         </link>
         <link name="t_0_7">
-          <pose>8.6875 -3.6875 0.2291 0.03155 -0.06106 0</pose>
+          <pose>8.6875 -3.6875 0.1260 0.01786 -0.03454 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1346,7 +1346,7 @@
           </visual>
         </link>
         <link name="t_1_0">
-          <pose>9.0625 -6.3125 0.3077 -0.00527 -0.00878 0</pose>
+          <pose>9.0625 -6.3125 0.1704 -0.00298 -0.00496 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1363,7 +1363,7 @@
           </visual>
         </link>
         <link name="t_1_1">
-          <pose>9.0625 -5.9375 0.2995 -0.05264 -0.02635 0</pose>
+          <pose>9.0625 -5.9375 0.1658 -0.02978 -0.01489 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1380,7 +1380,7 @@
           </visual>
         </link>
         <link name="t_1_2">
-          <pose>9.0625 -5.5625 0.2830 -0.01053 -0.04214 0</pose>
+          <pose>9.0625 -5.5625 0.1565 -0.00596 -0.02383 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1397,7 +1397,7 @@
           </visual>
         </link>
         <link name="t_1_3">
-          <pose>9.0625 -5.1875 0.2808 -0.02275 -0.08413 0</pose>
+          <pose>9.0625 -5.1875 0.1552 -0.01289 -0.04762 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1414,7 +1414,7 @@
           </visual>
         </link>
         <link name="t_1_4">
-          <pose>9.0625 -4.8125 0.2654 -0.04027 -0.07715 0</pose>
+          <pose>9.0625 -4.8125 0.1465 -0.02281 -0.04366 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1431,7 +1431,7 @@
           </visual>
         </link>
         <link name="t_1_5">
-          <pose>9.0625 -4.4375 0.2583 -0.00350 -0.07540 0</pose>
+          <pose>9.0625 -4.4375 0.1425 -0.00198 -0.04267 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1448,7 +1448,7 @@
           </visual>
         </link>
         <link name="t_1_6">
-          <pose>9.0625 -4.0625 0.2555 -0.01749 -0.09633 0</pose>
+          <pose>9.0625 -4.0625 0.1409 -0.00991 -0.05456 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1465,7 +1465,7 @@
           </visual>
         </link>
         <link name="t_1_7">
-          <pose>9.0625 -3.6875 0.2489 -0.01755 -0.04915 0</pose>
+          <pose>9.0625 -3.6875 0.1372 -0.00992 -0.02779 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1482,7 +1482,7 @@
           </visual>
         </link>
         <link name="t_2_0">
-          <pose>9.4375 -6.3125 0.3032 -0.01229 0.02845 0</pose>
+          <pose>9.4375 -6.3125 0.1679 -0.00695 0.01608 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1499,7 +1499,7 @@
           </visual>
         </link>
         <link name="t_2_1">
-          <pose>9.4375 -5.9375 0.2973 -0.02283 0.02459 0</pose>
+          <pose>9.4375 -5.9375 0.1645 -0.01291 0.01390 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1516,7 +1516,7 @@
           </visual>
         </link>
         <link name="t_2_2">
-          <pose>9.4375 -5.5625 0.2917 0.00387 -0.00527 0</pose>
+          <pose>9.4375 -5.5625 0.1614 0.00218 -0.00298 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1533,7 +1533,7 @@
           </visual>
         </link>
         <link name="t_2_3">
-          <pose>9.4375 -5.1875 0.2964 -0.00141 -0.01054 0</pose>
+          <pose>9.4375 -5.1875 0.1640 -0.00079 -0.00596 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1550,7 +1550,7 @@
           </visual>
         </link>
         <link name="t_2_4">
-          <pose>9.4375 -4.8125 0.2870 -0.02808 -0.04284 0</pose>
+          <pose>9.4375 -4.8125 0.1587 -0.01588 -0.02422 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1567,7 +1567,7 @@
           </visual>
         </link>
         <link name="t_2_5">
-          <pose>9.4375 -4.4375 0.2842 0.00666 -0.06106 0</pose>
+          <pose>9.4375 -4.4375 0.1571 0.00377 -0.03454 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1584,7 +1584,7 @@
           </visual>
         </link>
         <link name="t_2_6">
-          <pose>9.4375 -4.0625 0.2835 -0.02630 -0.05791 0</pose>
+          <pose>9.4375 -4.0625 0.1568 -0.01488 -0.03275 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1601,7 +1601,7 @@
           </visual>
         </link>
         <link name="t_2_7">
-          <pose>9.4375 -3.6875 0.2687 -0.03261 -0.05931 0</pose>
+          <pose>9.4375 -3.6875 0.1484 -0.01846 -0.03355 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1618,7 +1618,7 @@
           </visual>
         </link>
         <link name="t_3_0">
-          <pose>9.8125 -6.3125 0.2890 -0.03545 0.03337 0</pose>
+          <pose>9.8125 -6.3125 0.1599 -0.02005 0.01886 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1635,7 +1635,7 @@
           </visual>
         </link>
         <link name="t_3_1">
-          <pose>9.8125 -5.9375 0.2863 0.00703 0.01932 0</pose>
+          <pose>9.8125 -5.9375 0.1583 0.00397 0.01092 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1652,7 +1652,7 @@
           </visual>
         </link>
         <link name="t_3_2">
-          <pose>9.8125 -5.5625 0.2887 0.00949 0.00527 0</pose>
+          <pose>9.8125 -5.5625 0.1597 0.00536 0.00298 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1669,7 +1669,7 @@
           </visual>
         </link>
         <link name="t_3_3">
-          <pose>9.8125 -5.1875 0.2940 0.01616 0.01616 0</pose>
+          <pose>9.8125 -5.1875 0.1627 0.00913 0.00913 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1686,7 +1686,7 @@
           </visual>
         </link>
         <link name="t_3_4">
-          <pose>9.8125 -4.8125 0.3011 0.01264 -0.03126 0</pose>
+          <pose>9.8125 -4.8125 0.1667 0.00715 -0.01767 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1703,7 +1703,7 @@
           </visual>
         </link>
         <link name="t_3_5">
-          <pose>9.8125 -4.4375 0.3033 0.00386 -0.04459 0</pose>
+          <pose>9.8125 -4.4375 0.1679 0.00218 -0.02521 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1720,7 +1720,7 @@
           </visual>
         </link>
         <link name="t_3_6">
-          <pose>9.8125 -4.0625 0.3033 -0.01228 -0.04565 0</pose>
+          <pose>9.8125 -4.0625 0.1679 -0.00695 -0.02581 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1737,7 +1737,7 @@
           </visual>
         </link>
         <link name="t_3_7">
-          <pose>9.8125 -3.6875 0.2932 -0.02662 -0.07610 0</pose>
+          <pose>9.8125 -3.6875 0.1622 -0.01508 -0.04307 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1754,7 +1754,7 @@
           </visual>
         </link>
         <link name="t_4_0">
-          <pose>10.1875 -6.3125 0.2841 -0.04038 -0.01335 0</pose>
+          <pose>10.1875 -6.3125 0.1571 -0.02283 -0.00755 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1771,7 +1771,7 @@
           </visual>
         </link>
         <link name="t_4_1">
-          <pose>10.1875 -5.9375 0.2835 0.02634 -0.01405 0</pose>
+          <pose>10.1875 -5.9375 0.1568 0.01489 -0.00794 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1788,7 +1788,7 @@
           </visual>
         </link>
         <link name="t_4_2">
-          <pose>10.1875 -5.5625 0.2888 -0.00105 -0.00878 0</pose>
+          <pose>10.1875 -5.5625 0.1597 -0.00060 -0.00496 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1805,7 +1805,7 @@
           </visual>
         </link>
         <link name="t_4_3">
-          <pose>10.1875 -5.1875 0.2917 0.03898 -0.01932 0</pose>
+          <pose>10.1875 -5.1875 0.1614 0.02204 -0.01092 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1822,7 +1822,7 @@
           </visual>
         </link>
         <link name="t_4_4">
-          <pose>10.1875 -4.8125 0.3154 0.04561 -0.04249 0</pose>
+          <pose>10.1875 -4.8125 0.1748 0.02580 -0.02402 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1839,7 +1839,7 @@
           </visual>
         </link>
         <link name="t_4_5">
-          <pose>10.1875 -4.4375 0.3184 -0.00702 -0.04389 0</pose>
+          <pose>10.1875 -4.4375 0.1765 -0.00397 -0.02482 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1856,7 +1856,7 @@
           </visual>
         </link>
         <link name="t_4_6">
-          <pose>10.1875 -4.0625 0.3209 0.02104 -0.06141 0</pose>
+          <pose>10.1875 -4.0625 0.1779 0.01191 -0.03474 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1873,7 +1873,7 @@
           </visual>
         </link>
         <link name="t_4_7">
-          <pose>10.1875 -3.6875 0.3217 -0.02697 -0.07540 0</pose>
+          <pose>10.1875 -3.6875 0.1784 -0.01528 -0.04267 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1890,7 +1890,7 @@
           </visual>
         </link>
         <link name="t_5_0">
-          <pose>10.5625 -6.3125 0.2993 -0.02385 -0.05651 0</pose>
+          <pose>10.5625 -6.3125 0.1657 -0.01350 -0.03196 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1907,7 +1907,7 @@
           </visual>
         </link>
         <link name="t_5_1">
-          <pose>10.5625 -5.9375 0.2973 0.00351 -0.03863 0</pose>
+          <pose>10.5625 -5.9375 0.1645 0.00199 -0.02184 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1924,7 +1924,7 @@
           </visual>
         </link>
         <link name="t_5_2">
-          <pose>10.5625 -5.5625 0.2996 0.00526 -0.04600 0</pose>
+          <pose>10.5625 -5.5625 0.1658 0.00298 -0.02601 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1941,7 +1941,7 @@
           </visual>
         </link>
         <link name="t_5_3">
-          <pose>10.5625 -5.1875 0.3060 0.04733 -0.05441 0</pose>
+          <pose>10.5625 -5.1875 0.1695 0.02679 -0.03077 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1958,7 +1958,7 @@
           </visual>
         </link>
         <link name="t_5_4">
-          <pose>10.5625 -4.8125 0.3304 0.05017 -0.03863 0</pose>
+          <pose>10.5625 -4.8125 0.1833 0.02838 -0.02184 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1975,7 +1975,7 @@
           </visual>
         </link>
         <link name="t_5_5">
-          <pose>10.5625 -4.4375 0.3367 0.00386 -0.05371 0</pose>
+          <pose>10.5625 -4.4375 0.1868 0.00218 -0.03037 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -1992,7 +1992,7 @@
           </visual>
         </link>
         <link name="t_5_6">
-          <pose>10.5625 -4.0625 0.3445 0.03506 -0.06141 0</pose>
+          <pose>10.5625 -4.0625 0.1912 0.01984 -0.03474 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2009,7 +2009,7 @@
           </visual>
         </link>
         <link name="t_5_7">
-          <pose>10.5625 -3.6875 0.3484 -0.03296 -0.05756 0</pose>
+          <pose>10.5625 -3.6875 0.1934 -0.01865 -0.03256 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2026,7 +2026,7 @@
           </visual>
         </link>
         <link name="t_6_0">
-          <pose>10.9375 -6.3125 0.3198 -0.01580 -0.03512 0</pose>
+          <pose>10.9375 -6.3125 0.1772 -0.00893 -0.01986 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2043,7 +2043,7 @@
           </visual>
         </link>
         <link name="t_6_1">
-          <pose>10.9375 -5.9375 0.3104 -0.00878 -0.01757 0</pose>
+          <pose>10.9375 -5.9375 0.1720 -0.00496 -0.00993 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2060,7 +2060,7 @@
           </visual>
         </link>
         <link name="t_6_2">
-          <pose>10.9375 -5.5625 0.3192 0.04033 -0.05091 0</pose>
+          <pose>10.9375 -5.5625 0.1769 0.02282 -0.02879 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2077,7 +2077,7 @@
           </visual>
         </link>
         <link name="t_6_3">
-          <pose>10.9375 -5.1875 0.3291 0.01755 -0.04740 0</pose>
+          <pose>10.9375 -5.1875 0.1825 0.00993 -0.02680 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2094,7 +2094,7 @@
           </visual>
         </link>
         <link name="t_6_4">
-          <pose>10.9375 -4.8125 0.3423 0.05089 -0.02635 0</pose>
+          <pose>10.9375 -4.8125 0.1900 0.02878 -0.01489 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2111,7 +2111,7 @@
           </visual>
         </link>
         <link name="t_6_5">
-          <pose>10.9375 -4.4375 0.3560 0.02105 -0.05266 0</pose>
+          <pose>10.9375 -4.4375 0.1977 0.01191 -0.02978 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2128,7 +2128,7 @@
           </visual>
         </link>
         <link name="t_6_6">
-          <pose>10.9375 -4.0625 0.3626 0.01756 -0.03512 0</pose>
+          <pose>10.9375 -4.0625 0.2014 0.00993 -0.01986 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2145,7 +2145,7 @@
           </visual>
         </link>
         <link name="t_6_7">
-          <pose>10.9375 -3.6875 0.3642 -0.01932 -0.02810 0</pose>
+          <pose>10.9375 -3.6875 0.2024 -0.01092 -0.01589 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2162,7 +2162,7 @@
           </visual>
         </link>
         <link name="t_7_0">
-          <pose>11.3125 -6.3125 0.3186 -0.00878 0.04039 0</pose>
+          <pose>11.3125 -6.3125 0.1766 -0.00496 0.02283 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2179,7 +2179,7 @@
           </visual>
         </link>
         <link name="t_7_1">
-          <pose>11.3125 -5.9375 0.3093 0.01581 0.01581 0</pose>
+          <pose>11.3125 -5.9375 0.1713 0.00894 0.00894 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2196,7 +2196,7 @@
           </visual>
         </link>
         <link name="t_7_2">
-          <pose>11.3125 -5.5625 0.3313 0.05966 -0.00387 0</pose>
+          <pose>11.3125 -5.5625 0.1838 0.03375 -0.00218 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2213,7 +2213,7 @@
           </visual>
         </link>
         <link name="t_7_3">
-          <pose>11.3125 -5.1875 0.3384 -0.00703 -0.00281 0</pose>
+          <pose>11.3125 -5.1875 0.1878 -0.00397 -0.00159 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2230,7 +2230,7 @@
           </visual>
         </link>
         <link name="t_7_4">
-          <pose>11.3125 -4.8125 0.3467 0.05896 -0.00703 0</pose>
+          <pose>11.3125 -4.8125 0.1924 0.03335 -0.00397 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2247,7 +2247,7 @@
           </visual>
         </link>
         <link name="t_7_5">
-          <pose>11.3125 -4.4375 0.3697 0.02950 -0.01511 0</pose>
+          <pose>11.3125 -4.4375 0.2055 0.01668 -0.00854 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2264,7 +2264,7 @@
           </visual>
         </link>
         <link name="t_7_6">
-          <pose>11.3125 -4.0625 0.3681 -0.00878 0.00351 0</pose>
+          <pose>11.3125 -4.0625 0.2045 -0.00496 0.00199 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2281,7 +2281,7 @@
           </visual>
         </link>
         <link name="t_7_7">
-          <pose>11.3125 -3.6875 0.3713 0.00527 -0.00878 0</pose>
+          <pose>11.3125 -3.6875 0.2063 0.00298 -0.00496 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2308,7 +2308,7 @@
       <static>true</static>
       <pose>0 0 0 0 0 0</pose>
         <link name="t_0_0">
-          <pose>3.6875 -11.3125 0.5294 -0.01545 -0.02670 0</pose>
+          <pose>3.6875 -11.3125 0.2957 -0.00874 -0.01509 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2325,7 +2325,7 @@
           </visual>
         </link>
         <link name="t_0_1">
-          <pose>3.6875 -10.9375 0.5289 0.01756 -0.02108 0</pose>
+          <pose>3.6875 -10.9375 0.2955 0.00993 -0.01191 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2342,7 +2342,7 @@
           </visual>
         </link>
         <link name="t_0_2">
-          <pose>3.6875 -10.5625 0.5196 -0.07607 -0.02635 0</pose>
+          <pose>3.6875 -10.5625 0.2902 -0.04306 -0.01489 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2359,7 +2359,7 @@
           </visual>
         </link>
         <link name="t_0_3">
-          <pose>3.6875 -10.1875 0.4894 -0.04038 -0.01581 0</pose>
+          <pose>3.6875 -10.1875 0.2731 -0.02283 -0.00894 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2376,7 +2376,7 @@
           </visual>
         </link>
         <link name="t_0_4">
-          <pose>3.6875 -9.8125 0.4792 -0.06384 0.02880 0</pose>
+          <pose>3.6875 -9.8125 0.2673 -0.03612 0.01628 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2393,7 +2393,7 @@
           </visual>
         </link>
         <link name="t_0_5">
-          <pose>3.6875 -9.4375 0.4400 -0.09281 0.02810 0</pose>
+          <pose>3.6875 -9.4375 0.2452 -0.05257 0.01589 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2410,7 +2410,7 @@
           </visual>
         </link>
         <link name="t_0_6">
-          <pose>3.6875 -9.0625 0.4252 -0.01405 0.03161 0</pose>
+          <pose>3.6875 -9.0625 0.2368 -0.00794 0.01787 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2427,7 +2427,7 @@
           </visual>
         </link>
         <link name="t_0_7">
-          <pose>3.6875 -8.6875 0.3962 -0.12329 0.04249 0</pose>
+          <pose>3.6875 -8.6875 0.2204 -0.06996 0.02402 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2444,7 +2444,7 @@
           </visual>
         </link>
         <link name="t_1_0">
-          <pose>4.0625 -11.3125 0.5311 -0.00527 0.01581 0</pose>
+          <pose>4.0625 -11.3125 0.2967 -0.00298 0.00894 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2461,7 +2461,7 @@
           </visual>
         </link>
         <link name="t_1_1">
-          <pose>4.0625 -10.9375 0.5328 0.01757 -0.00878 0</pose>
+          <pose>4.0625 -10.9375 0.2976 0.00993 -0.00496 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2478,7 +2478,7 @@
           </visual>
         </link>
         <link name="t_1_2">
-          <pose>4.0625 -10.5625 0.5284 -0.05790 -0.01581 0</pose>
+          <pose>4.0625 -10.5625 0.2951 -0.03275 -0.00894 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2495,7 +2495,7 @@
           </visual>
         </link>
         <link name="t_1_3">
-          <pose>4.0625 -10.1875 0.4971 -0.07363 -0.02635 0</pose>
+          <pose>4.0625 -10.1875 0.2775 -0.04167 -0.01489 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2512,7 +2512,7 @@
           </visual>
         </link>
         <link name="t_1_4">
-          <pose>4.0625 -9.8125 0.4724 -0.08239 -0.00000 0</pose>
+          <pose>4.0625 -9.8125 0.2635 -0.04663 -0.00000 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2529,7 +2529,7 @@
           </visual>
         </link>
         <link name="t_1_5">
-          <pose>4.0625 -9.4375 0.4367 -0.08587 -0.00000 0</pose>
+          <pose>4.0625 -9.4375 0.2433 -0.04861 -0.00000 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2546,7 +2546,7 @@
           </visual>
         </link>
         <link name="t_1_6">
-          <pose>4.0625 -9.0625 0.4120 -0.06139 0.02635 0</pose>
+          <pose>4.0625 -9.0625 0.2294 -0.03473 0.01489 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2563,7 +2563,7 @@
           </visual>
         </link>
         <link name="t_1_7">
-          <pose>4.0625 -8.6875 0.3818 -0.08062 0.02459 0</pose>
+          <pose>4.0625 -8.6875 0.2123 -0.04564 0.01390 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2580,7 +2580,7 @@
           </visual>
         </link>
         <link name="t_2_0">
-          <pose>4.4375 -11.3125 0.5258 0.02845 0.00141 0</pose>
+          <pose>4.4375 -11.3125 0.2937 0.01608 0.00079 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2597,7 +2597,7 @@
           </visual>
         </link>
         <link name="t_2_1">
-          <pose>4.4375 -10.9375 0.5394 0.02634 -0.02108 0</pose>
+          <pose>4.4375 -10.9375 0.3014 0.01489 -0.01191 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2614,7 +2614,7 @@
           </visual>
         </link>
         <link name="t_2_2">
-          <pose>4.4375 -10.5625 0.5333 -0.04950 -0.01546 0</pose>
+          <pose>4.4375 -10.5625 0.2979 -0.02799 -0.00874 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2631,7 +2631,7 @@
           </visual>
         </link>
         <link name="t_2_3">
-          <pose>4.4375 -10.1875 0.5106 -0.06589 -0.04845 0</pose>
+          <pose>4.4375 -10.1875 0.2851 -0.03730 -0.02740 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2648,7 +2648,7 @@
           </visual>
         </link>
         <link name="t_2_4">
-          <pose>4.4375 -9.8125 0.4810 -0.09275 -0.04495 0</pose>
+          <pose>4.4375 -9.8125 0.2683 -0.05256 -0.02541 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2665,7 +2665,7 @@
           </visual>
         </link>
         <link name="t_2_5">
-          <pose>4.4375 -9.4375 0.4444 -0.09104 -0.03863 0</pose>
+          <pose>4.4375 -9.4375 0.2477 -0.05157 -0.02184 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2682,7 +2682,7 @@
           </visual>
         </link>
         <link name="t_2_6">
-          <pose>4.4375 -9.0625 0.4104 -0.09980 -0.01581 0</pose>
+          <pose>4.4375 -9.0625 0.2284 -0.05653 -0.00894 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2699,7 +2699,7 @@
           </visual>
         </link>
         <link name="t_2_7">
-          <pose>4.4375 -8.6875 0.3785 -0.05651 0.00105 0</pose>
+          <pose>4.4375 -8.6875 0.2104 -0.03196 0.00060 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2716,7 +2716,7 @@
           </visual>
         </link>
         <link name="t_3_0">
-          <pose>4.8125 -11.3125 0.5328 0.06555 -0.04495 0</pose>
+          <pose>4.8125 -11.3125 0.2976 0.03711 -0.02541 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2733,7 +2733,7 @@
           </visual>
         </link>
         <link name="t_3_1">
-          <pose>4.8125 -10.9375 0.5531 -0.00351 -0.04389 0</pose>
+          <pose>4.8125 -10.9375 0.3091 -0.00199 -0.02482 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2750,7 +2750,7 @@
           </visual>
         </link>
         <link name="t_3_2">
-          <pose>4.8125 -10.5625 0.5383 -0.03126 -0.01932 0</pose>
+          <pose>4.8125 -10.5625 0.3007 -0.01767 -0.01092 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2767,7 +2767,7 @@
           </visual>
         </link>
         <link name="t_3_3">
-          <pose>4.8125 -10.1875 0.5340 -0.03750 -0.06666 0</pose>
+          <pose>4.8125 -10.1875 0.2983 -0.02123 -0.03771 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2784,7 +2784,7 @@
           </visual>
         </link>
         <link name="t_3_4">
-          <pose>4.8125 -9.8125 0.5016 -0.12008 -0.05931 0</pose>
+          <pose>4.8125 -9.8125 0.2800 -0.06817 -0.03355 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2801,7 +2801,7 @@
           </visual>
         </link>
         <link name="t_3_5">
-          <pose>4.8125 -9.4375 0.4616 -0.08330 -0.05616 0</pose>
+          <pose>4.8125 -9.4375 0.2574 -0.04720 -0.03176 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2818,7 +2818,7 @@
           </visual>
         </link>
         <link name="t_3_6">
-          <pose>4.8125 -9.0625 0.4263 -0.12210 -0.06666 0</pose>
+          <pose>4.8125 -9.0625 0.2374 -0.06934 -0.03771 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2835,7 +2835,7 @@
           </visual>
         </link>
         <link name="t_3_7">
-          <pose>4.8125 -8.6875 0.3824 -0.07608 -0.02108 0</pose>
+          <pose>4.8125 -8.6875 0.2126 -0.04306 -0.01191 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2852,7 +2852,7 @@
           </visual>
         </link>
         <link name="t_4_0">
-          <pose>5.1875 -11.3125 0.5586 0.06365 -0.08239 0</pose>
+          <pose>5.1875 -11.3125 0.3122 0.03609 -0.04663 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2869,7 +2869,7 @@
           </visual>
         </link>
         <link name="t_4_1">
-          <pose>5.1875 -10.9375 0.5690 -0.05438 -0.03337 0</pose>
+          <pose>5.1875 -10.9375 0.3181 -0.03077 -0.01886 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2886,7 +2886,7 @@
           </visual>
         </link>
         <link name="t_4_2">
-          <pose>5.1875 -10.5625 0.5473 -0.00457 -0.02564 0</pose>
+          <pose>5.1875 -10.5625 0.3058 -0.00258 -0.01450 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2903,7 +2903,7 @@
           </visual>
         </link>
         <link name="t_4_3">
-          <pose>5.1875 -10.1875 0.5563 -0.02246 -0.04600 0</pose>
+          <pose>5.1875 -10.1875 0.3109 -0.01270 -0.02601 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2920,7 +2920,7 @@
           </visual>
         </link>
         <link name="t_4_4">
-          <pose>5.1875 -9.8125 0.5208 -0.12679 -0.03337 0</pose>
+          <pose>5.1875 -9.8125 0.2909 -0.07195 -0.01886 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2937,7 +2937,7 @@
           </visual>
         </link>
         <link name="t_4_5">
-          <pose>5.1875 -9.4375 0.4859 -0.06235 -0.06141 0</pose>
+          <pose>5.1875 -9.4375 0.2711 -0.03531 -0.03474 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2954,7 +2954,7 @@
           </visual>
         </link>
         <link name="t_4_6">
-          <pose>5.1875 -9.0625 0.4526 -0.14963 -0.06666 0</pose>
+          <pose>5.1875 -9.0625 0.2523 -0.08512 -0.03771 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2971,7 +2971,7 @@
           </visual>
         </link>
         <link name="t_4_7">
-          <pose>5.1875 -8.6875 0.3942 -0.10320 -0.04214 0</pose>
+          <pose>5.1875 -8.6875 0.2193 -0.05850 -0.02383 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -2988,7 +2988,7 @@
           </visual>
         </link>
         <link name="t_5_0">
-          <pose>5.5625 -11.3125 0.5879 0.01298 -0.05826 0</pose>
+          <pose>5.5625 -11.3125 0.3288 0.00734 -0.03295 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3005,7 +3005,7 @@
           </visual>
         </link>
         <link name="t_5_1">
-          <pose>5.5625 -10.9375 0.5767 -0.07016 -0.00703 0</pose>
+          <pose>5.5625 -10.9375 0.3225 -0.03970 -0.00397 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3022,7 +3022,7 @@
           </visual>
         </link>
         <link name="t_5_2">
-          <pose>5.5625 -10.5625 0.5575 -0.00211 -0.01897 0</pose>
+          <pose>5.5625 -10.5625 0.3116 -0.00119 -0.01072 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3039,7 +3039,7 @@
           </visual>
         </link>
         <link name="t_5_3">
-          <pose>5.5625 -10.1875 0.5617 -0.03792 0.02003 0</pose>
+          <pose>5.5625 -10.1875 0.3140 -0.02144 0.01132 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3056,7 +3056,7 @@
           </visual>
         </link>
         <link name="t_5_4">
-          <pose>5.5625 -9.8125 0.5252 -0.10398 0.00492 0</pose>
+          <pose>5.5625 -9.8125 0.2933 -0.05891 0.00278 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3073,7 +3073,7 @@
           </visual>
         </link>
         <link name="t_5_5">
-          <pose>5.5625 -9.4375 0.5042 -0.03826 -0.03196 0</pose>
+          <pose>5.5625 -9.4375 0.2815 -0.02164 -0.01807 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3090,7 +3090,7 @@
           </visual>
         </link>
         <link name="t_5_6">
-          <pose>5.5625 -9.0625 0.4702 -0.15677 -0.02459 0</pose>
+          <pose>5.5625 -9.0625 0.2623 -0.08912 -0.01390 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3107,7 +3107,7 @@
           </visual>
         </link>
         <link name="t_5_7">
-          <pose>5.5625 -8.6875 0.4131 -0.10695 -0.05476 0</pose>
+          <pose>5.5625 -8.6875 0.2300 -0.06066 -0.03097 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3124,7 +3124,7 @@
           </visual>
         </link>
         <link name="t_6_0">
-          <pose>5.9375 -11.3125 0.5992 -0.04565 -0.00703 0</pose>
+          <pose>5.9375 -11.3125 0.3352 -0.02581 -0.00397 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3141,7 +3141,7 @@
           </visual>
         </link>
         <link name="t_6_1">
-          <pose>5.9375 -10.9375 0.5767 -0.07016 0.00878 0</pose>
+          <pose>5.9375 -10.9375 0.3225 -0.03970 0.00496 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3158,7 +3158,7 @@
           </visual>
         </link>
         <link name="t_6_2">
-          <pose>5.9375 -10.5625 0.5591 -0.02635 0.01054 0</pose>
+          <pose>5.9375 -10.5625 0.3125 -0.01489 0.00596 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3175,7 +3175,7 @@
           </visual>
         </link>
         <link name="t_6_3">
-          <pose>5.9375 -10.1875 0.5432 -0.06651 0.06841 0</pose>
+          <pose>5.9375 -10.1875 0.3035 -0.03768 0.03870 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3192,7 +3192,7 @@
           </visual>
         </link>
         <link name="t_6_4">
-          <pose>5.9375 -9.8125 0.5180 -0.04738 0.03161 0</pose>
+          <pose>5.9375 -9.8125 0.2893 -0.02680 0.01787 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3209,7 +3209,7 @@
           </visual>
         </link>
         <link name="t_6_5">
-          <pose>5.9375 -9.4375 0.5059 -0.05088 0.02810 0</pose>
+          <pose>5.9375 -9.4375 0.2824 -0.02878 0.01589 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3226,7 +3226,7 @@
           </visual>
         </link>
         <link name="t_6_6">
-          <pose>5.9375 -9.0625 0.4724 -0.12235 0.01757 0</pose>
+          <pose>5.9375 -9.0625 0.2635 -0.06939 0.00993 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3243,7 +3243,7 @@
           </visual>
         </link>
         <link name="t_6_7">
-          <pose>5.9375 -8.6875 0.4351 -0.07879 -0.05091 0</pose>
+          <pose>5.9375 -8.6875 0.2424 -0.04463 -0.02879 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3260,7 +3260,7 @@
           </visual>
         </link>
         <link name="t_7_0">
-          <pose>6.3125 -11.3125 0.5937 -0.06525 0.02213 0</pose>
+          <pose>6.3125 -11.3125 0.3321 -0.03692 0.01251 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3277,7 +3277,7 @@
           </visual>
         </link>
         <link name="t_7_1">
-          <pose>6.3125 -10.9375 0.5701 -0.04389 0.01757 0</pose>
+          <pose>6.3125 -10.9375 0.3187 -0.02482 0.00993 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3294,7 +3294,7 @@
           </visual>
         </link>
         <link name="t_7_2">
-          <pose>6.3125 -10.5625 0.5505 -0.07536 0.03337 0</pose>
+          <pose>6.3125 -10.5625 0.3076 -0.04266 0.01886 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3311,7 +3311,7 @@
           </visual>
         </link>
         <link name="t_7_3">
-          <pose>6.3125 -10.1875 0.5161 -0.07944 0.06211 0</pose>
+          <pose>6.3125 -10.1875 0.2882 -0.04502 0.03513 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3328,7 +3328,7 @@
           </visual>
         </link>
         <link name="t_7_4">
-          <pose>6.3125 -9.8125 0.5015 -0.01930 0.05266 0</pose>
+          <pose>6.3125 -9.8125 0.2799 -0.01092 0.02978 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3345,7 +3345,7 @@
           </visual>
         </link>
         <link name="t_7_5">
-          <pose>6.3125 -9.4375 0.4866 -0.07176 0.06456 0</pose>
+          <pose>6.3125 -9.4375 0.2715 -0.04066 0.03652 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3362,7 +3362,7 @@
           </visual>
         </link>
         <link name="t_7_6">
-          <pose>6.3125 -9.0625 0.4581 -0.04210 0.04389 0</pose>
+          <pose>6.3125 -9.0625 0.2554 -0.02382 0.02482 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3379,7 +3379,7 @@
           </visual>
         </link>
         <link name="t_7_7">
-          <pose>6.3125 -8.6875 0.4482 -0.05510 -0.01581 0</pose>
+          <pose>6.3125 -8.6875 0.2498 -0.03117 -0.00894 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3406,7 +3406,7 @@
       <static>true</static>
       <pose>0 0 0 0 0 0</pose>
         <link name="t_0_0">
-          <pose>-1.3125 -6.3125 0.3983 -0.02879 -0.03337 0</pose>
+          <pose>-1.3125 -6.3125 0.2216 -0.01628 -0.01886 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3423,7 +3423,7 @@
           </visual>
         </link>
         <link name="t_0_1">
-          <pose>-1.3125 -5.9375 0.3917 0.01230 -0.01932 0</pose>
+          <pose>-1.3125 -5.9375 0.2179 0.00695 -0.01092 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3440,7 +3440,7 @@
           </visual>
         </link>
         <link name="t_0_2">
-          <pose>-1.3125 -5.5625 0.3994 0.01405 -0.00703 0</pose>
+          <pose>-1.3125 -5.5625 0.2222 0.00794 -0.00397 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3457,7 +3457,7 @@
           </visual>
         </link>
         <link name="t_0_3">
-          <pose>-1.3125 -5.1875 0.4032 0.02986 -0.00281 0</pose>
+          <pose>-1.3125 -5.1875 0.2244 0.01688 -0.00159 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3474,7 +3474,7 @@
           </visual>
         </link>
         <link name="t_0_4">
-          <pose>-1.3125 -4.8125 0.4268 0.07819 0.01265 0</pose>
+          <pose>-1.3125 -4.8125 0.2377 0.04425 0.00715 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3491,7 +3491,7 @@
           </visual>
         </link>
         <link name="t_0_5">
-          <pose>-1.3125 -4.4375 0.4443 0.01230 0.00703 0</pose>
+          <pose>-1.3125 -4.4375 0.2476 0.00695 0.00397 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3508,7 +3508,7 @@
           </visual>
         </link>
         <link name="t_0_6">
-          <pose>-1.3125 -4.0625 0.4521 0.05790 -0.02108 0</pose>
+          <pose>-1.3125 -4.0625 0.2520 0.03275 -0.01191 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3525,7 +3525,7 @@
           </visual>
         </link>
         <link name="t_0_7">
-          <pose>-1.3125 -3.6875 0.4712 -0.02178 -0.02284 0</pose>
+          <pose>-1.3125 -3.6875 0.2628 -0.01231 -0.01291 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3542,7 +3542,7 @@
           </visual>
         </link>
         <link name="t_1_0">
-          <pose>-0.9375 -6.3125 0.4175 -0.00351 -0.06666 0</pose>
+          <pose>-0.9375 -6.3125 0.2325 -0.00198 -0.03771 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3559,7 +3559,7 @@
           </visual>
         </link>
         <link name="t_1_1">
-          <pose>-0.9375 -5.9375 0.4065 -0.01752 -0.07016 0</pose>
+          <pose>-0.9375 -5.9375 0.2263 -0.00992 -0.03970 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3576,7 +3576,7 @@
           </visual>
         </link>
         <link name="t_1_2">
-          <pose>-0.9375 -5.5625 0.4131 0.02278 -0.07016 0</pose>
+          <pose>-0.9375 -5.5625 0.2300 0.01290 -0.03970 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3593,7 +3593,7 @@
           </visual>
         </link>
         <link name="t_1_3">
-          <pose>-0.9375 -5.1875 0.4175 0.00175 -0.07191 0</pose>
+          <pose>-0.9375 -5.1875 0.2325 0.00099 -0.04069 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3610,7 +3610,7 @@
           </visual>
         </link>
         <link name="t_1_4">
-          <pose>-0.9375 -4.8125 0.4274 0.05264 -0.02459 0</pose>
+          <pose>-0.9375 -4.8125 0.2381 0.02978 -0.01390 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3627,7 +3627,7 @@
           </visual>
         </link>
         <link name="t_1_5">
-          <pose>-0.9375 -4.4375 0.4455 0.03862 -0.02810 0</pose>
+          <pose>-0.9375 -4.4375 0.2483 0.02184 -0.01589 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3644,7 +3644,7 @@
           </visual>
         </link>
         <link name="t_1_6">
-          <pose>-0.9375 -4.0625 0.4614 0.06139 -0.02635 0</pose>
+          <pose>-0.9375 -4.0625 0.2573 0.03473 -0.01489 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3661,7 +3661,7 @@
           </visual>
         </link>
         <link name="t_1_7">
-          <pose>-0.9375 -3.6875 0.4735 -0.05616 0.00878 0</pose>
+          <pose>-0.9375 -3.6875 0.2641 -0.03176 0.00496 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3678,7 +3678,7 @@
           </visual>
         </link>
         <link name="t_2_0">
-          <pose>-0.5625 -6.3125 0.4451 0.01788 -0.06491 0</pose>
+          <pose>-0.5625 -6.3125 0.2480 0.01012 -0.03672 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3695,7 +3695,7 @@
           </visual>
         </link>
         <link name="t_2_1">
-          <pose>-0.5625 -5.9375 0.4405 0.00350 -0.09981 0</pose>
+          <pose>-0.5625 -5.9375 0.2455 0.00198 -0.05654 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3712,7 +3712,7 @@
           </visual>
         </link>
         <link name="t_2_2">
-          <pose>-0.5625 -5.5625 0.4521 0.03001 -0.11578 0</pose>
+          <pose>-0.5625 -5.5625 0.2520 0.01704 -0.06564 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3729,7 +3729,7 @@
           </visual>
         </link>
         <link name="t_2_3">
-          <pose>-0.5625 -5.1875 0.4523 -0.02200 -0.10954 0</pose>
+          <pose>-0.5625 -5.1875 0.2521 -0.01249 -0.06208 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3746,7 +3746,7 @@
           </visual>
         </link>
         <link name="t_2_4">
-          <pose>-0.5625 -4.8125 0.4488 0.02380 -0.08413 0</pose>
+          <pose>-0.5625 -4.8125 0.2502 0.01349 -0.04762 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3763,7 +3763,7 @@
           </visual>
         </link>
         <link name="t_2_5">
-          <pose>-0.5625 -4.4375 0.4664 0.03330 -0.06491 0</pose>
+          <pose>-0.5625 -4.4375 0.2601 0.01885 -0.03672 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3780,7 +3780,7 @@
           </visual>
         </link>
         <link name="t_2_6">
-          <pose>-0.5625 -4.0625 0.4718 0.01931 -0.03863 0</pose>
+          <pose>-0.5625 -4.0625 0.2632 0.01092 -0.02184 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3797,7 +3797,7 @@
           </visual>
         </link>
         <link name="t_2_7">
-          <pose>-0.5625 -3.6875 0.4707 -0.06386 -0.00141 0</pose>
+          <pose>-0.5625 -3.6875 0.2626 -0.03613 -0.00079 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3814,7 +3814,7 @@
           </visual>
         </link>
         <link name="t_3_0">
-          <pose>-0.1875 -6.3125 0.4616 0.05685 -0.01862 0</pose>
+          <pose>-0.1875 -6.3125 0.2574 0.03216 -0.01052 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3831,7 +3831,7 @@
           </visual>
         </link>
         <link name="t_3_1">
-          <pose>-0.1875 -5.9375 0.4779 0.04027 -0.07540 0</pose>
+          <pose>-0.1875 -5.9375 0.2666 0.02281 -0.04267 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3848,7 +3848,7 @@
           </visual>
         </link>
         <link name="t_3_2">
-          <pose>-0.1875 -5.5625 0.4924 0.02800 -0.08343 0</pose>
+          <pose>-0.1875 -5.5625 0.2748 0.01587 -0.04723 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3865,7 +3865,7 @@
           </visual>
         </link>
         <link name="t_3_3">
-          <pose>-0.1875 -5.1875 0.4944 -0.02133 -0.09807 0</pose>
+          <pose>-0.1875 -5.1875 0.2759 -0.01209 -0.05555 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3882,7 +3882,7 @@
           </visual>
         </link>
         <link name="t_3_4">
-          <pose>-0.1875 -4.8125 0.4879 0.00244 -0.11023 0</pose>
+          <pose>-0.1875 -4.8125 0.2722 0.00139 -0.06247 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3899,7 +3899,7 @@
           </visual>
         </link>
         <link name="t_3_5">
-          <pose>-0.1875 -4.4375 0.4919 0.00175 -0.06841 0</pose>
+          <pose>-0.1875 -4.4375 0.2745 0.00099 -0.03870 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3916,7 +3916,7 @@
           </visual>
         </link>
         <link name="t_3_6">
-          <pose>-0.1875 -4.0625 0.4878 -0.01404 -0.04389 0</pose>
+          <pose>-0.1875 -4.0625 0.2722 -0.00794 -0.02482 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3933,7 +3933,7 @@
           </visual>
         </link>
         <link name="t_3_7">
-          <pose>-0.1875 -3.6875 0.4748 -0.08343 -0.01124 0</pose>
+          <pose>-0.1875 -3.6875 0.2649 -0.04723 -0.00635 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3950,7 +3950,7 @@
           </visual>
         </link>
         <link name="t_4_0">
-          <pose>0.1875 -6.3125 0.4592 0.09490 0.02845 0</pose>
+          <pose>0.1875 -6.3125 0.2561 0.05376 0.01608 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3967,7 +3967,7 @@
           </visual>
         </link>
         <link name="t_4_1">
-          <pose>0.1875 -5.9375 0.4944 0.07016 -0.00878 0</pose>
+          <pose>0.1875 -5.9375 0.2759 0.03970 -0.00496 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -3984,7 +3984,7 @@
           </visual>
         </link>
         <link name="t_4_2">
-          <pose>0.1875 -5.5625 0.5103 0.03231 -0.00949 0</pose>
+          <pose>0.1875 -5.5625 0.2849 0.01827 -0.00536 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -4001,7 +4001,7 @@
           </visual>
         </link>
         <link name="t_4_3">
-          <pose>0.1875 -5.1875 0.5217 0.02422 -0.04249 0</pose>
+          <pose>0.1875 -5.1875 0.2914 0.01370 -0.02402 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -4018,7 +4018,7 @@
           </visual>
         </link>
         <link name="t_4_4">
-          <pose>0.1875 -4.8125 0.5224 -0.02104 -0.06316 0</pose>
+          <pose>0.1875 -4.8125 0.2917 -0.01191 -0.03573 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -4035,7 +4035,7 @@
           </visual>
         </link>
         <link name="t_4_5">
-          <pose>0.1875 -4.4375 0.5114 -0.02703 -0.03618 0</pose>
+          <pose>0.1875 -4.4375 0.2855 -0.01529 -0.02045 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -4052,7 +4052,7 @@
           </visual>
         </link>
         <link name="t_4_6">
-          <pose>0.1875 -4.0625 0.5042 -0.01755 -0.04389 0</pose>
+          <pose>0.1875 -4.0625 0.2815 -0.00993 -0.02482 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -4069,7 +4069,7 @@
           </visual>
         </link>
         <link name="t_4_7">
-          <pose>0.1875 -3.6875 0.4806 -0.12408 -0.01827 0</pose>
+          <pose>0.1875 -3.6875 0.2682 -0.07038 -0.01033 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -4086,7 +4086,7 @@
           </visual>
         </link>
         <link name="t_5_0">
-          <pose>0.5625 -6.3125 0.4416 0.10001 0.05371 0</pose>
+          <pose>0.5625 -6.3125 0.2461 0.05671 0.03037 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -4103,7 +4103,7 @@
           </visual>
         </link>
         <link name="t_5_1">
-          <pose>0.5625 -5.9375 0.4795 0.06998 0.07191 0</pose>
+          <pose>0.5625 -5.9375 0.2675 0.03966 0.04069 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -4120,7 +4120,7 @@
           </visual>
         </link>
         <link name="t_5_2">
-          <pose>0.5625 -5.5625 0.4982 0.05608 0.05441 0</pose>
+          <pose>0.5625 -5.5625 0.2781 0.03175 0.03077 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -4137,7 +4137,7 @@
           </visual>
         </link>
         <link name="t_5_3">
-          <pose>0.5625 -5.1875 0.5259 0.06245 0.02354 0</pose>
+          <pose>0.5625 -5.1875 0.2937 0.03533 0.01330 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -4154,7 +4154,7 @@
           </visual>
         </link>
         <link name="t_5_4">
-          <pose>0.5625 -4.8125 0.5326 -0.02459 0.00597 0</pose>
+          <pose>0.5625 -4.8125 0.2975 -0.01390 0.00338 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -4171,7 +4171,7 @@
           </visual>
         </link>
         <link name="t_5_5">
-          <pose>0.5625 -4.4375 0.5195 -0.01616 -0.01195 0</pose>
+          <pose>0.5625 -4.4375 0.2901 -0.00913 -0.00675 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -4188,7 +4188,7 @@
           </visual>
         </link>
         <link name="t_5_6">
-          <pose>0.5625 -4.0625 0.5196 -0.01756 -0.02459 0</pose>
+          <pose>0.5625 -4.0625 0.2902 -0.00993 -0.01390 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -4205,7 +4205,7 @@
           </visual>
         </link>
         <link name="t_5_7">
-          <pose>0.5625 -3.6875 0.4861 -0.14786 -0.02143 0</pose>
+          <pose>0.5625 -3.6875 0.2713 -0.08399 -0.01211 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -4222,7 +4222,7 @@
           </visual>
         </link>
         <link name="t_6_0">
-          <pose>0.9375 -6.3125 0.4224 0.05786 0.04214 0</pose>
+          <pose>0.9375 -6.3125 0.2353 0.03275 0.02383 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -4239,7 +4239,7 @@
           </visual>
         </link>
         <link name="t_6_1">
-          <pose>0.9375 -5.9375 0.4477 0.06989 0.08762 0</pose>
+          <pose>0.9375 -5.9375 0.2495 0.03965 0.04960 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -4256,7 +4256,7 @@
           </visual>
         </link>
         <link name="t_6_2">
-          <pose>0.9375 -5.5625 0.4768 0.07879 0.05266 0</pose>
+          <pose>0.9375 -5.5625 0.2660 0.04463 0.02978 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -4273,7 +4273,7 @@
           </visual>
         </link>
         <link name="t_6_3">
-          <pose>0.9375 -5.1875 0.5059 0.06476 0.06841 0</pose>
+          <pose>0.9375 -5.1875 0.2824 0.03669 0.03870 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -4290,7 +4290,7 @@
           </visual>
         </link>
         <link name="t_6_4">
-          <pose>0.9375 -4.8125 0.5218 0.01404 0.04565 0</pose>
+          <pose>0.9375 -4.8125 0.2914 0.00794 0.02581 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -4307,7 +4307,7 @@
           </visual>
         </link>
         <link name="t_6_5">
-          <pose>0.9375 -4.4375 0.5218 0.00527 0.00351 0</pose>
+          <pose>0.9375 -4.4375 0.2914 0.00298 0.00199 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -4324,7 +4324,7 @@
           </visual>
         </link>
         <link name="t_6_6">
-          <pose>0.9375 -4.0625 0.5218 -0.01757 -0.00000 0</pose>
+          <pose>0.9375 -4.0625 0.2914 -0.00993 -0.00000 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -4341,7 +4341,7 @@
           </visual>
         </link>
         <link name="t_6_7">
-          <pose>0.9375 -3.6875 0.4965 -0.13097 -0.02459 0</pose>
+          <pose>0.9375 -3.6875 0.2772 -0.07432 -0.01390 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -4358,7 +4358,7 @@
           </visual>
         </link>
         <link name="t_7_0">
-          <pose>1.3125 -6.3125 0.4113 0.00035 0.01230 0</pose>
+          <pose>1.3125 -6.3125 0.2290 0.00020 0.00695 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -4375,7 +4375,7 @@
           </visual>
         </link>
         <link name="t_7_1">
-          <pose>1.3125 -5.9375 0.4246 0.08759 0.02459 0</pose>
+          <pose>1.3125 -5.9375 0.2365 0.04960 0.01390 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -4392,7 +4392,7 @@
           </visual>
         </link>
         <link name="t_7_2">
-          <pose>1.3125 -5.5625 0.4588 0.06698 0.03302 0</pose>
+          <pose>1.3125 -5.5625 0.2558 0.03790 0.01866 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -4409,7 +4409,7 @@
           </visual>
         </link>
         <link name="t_7_3">
-          <pose>1.3125 -5.1875 0.4776 0.05532 0.07191 0</pose>
+          <pose>1.3125 -5.1875 0.2664 0.03134 0.04069 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -4426,7 +4426,7 @@
           </visual>
         </link>
         <link name="t_7_4">
-          <pose>1.3125 -4.8125 0.5039 0.06414 0.04635 0</pose>
+          <pose>1.3125 -4.8125 0.2813 0.03631 0.02621 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -4443,7 +4443,7 @@
           </visual>
         </link>
         <link name="t_7_5">
-          <pose>1.3125 -4.4375 0.5169 0.00176 0.02775 0</pose>
+          <pose>1.3125 -4.4375 0.2886 0.00099 0.01569 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -4460,7 +4460,7 @@
           </visual>
         </link>
         <link name="t_7_6">
-          <pose>1.3125 -4.0625 0.5152 0.00351 0.02986 0</pose>
+          <pose>1.3125 -4.0625 0.2877 0.00199 0.01688 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>
@@ -4477,7 +4477,7 @@
           </visual>
         </link>
         <link name="t_7_7">
-          <pose>1.3125 -3.6875 0.5073 -0.06768 -0.02810 0</pose>
+          <pose>1.3125 -3.6875 0.2832 -0.03830 -0.01589 0</pose>
           <collision name="collision">
             <geometry><box><size>0.3750 0.3750 0.04</size></box></geometry>
             <surface>

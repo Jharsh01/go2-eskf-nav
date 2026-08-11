@@ -314,6 +314,13 @@ def main():
                          "deg, 0.7 -> 3.7/16.6, 1.0 -> 5.2/23.1, 1.6 -> 8.4/34.3. "
                          "CHAMP's blind gait already falls occasionally on FLAT "
                          "ground, so start low and work up.")
+    ap.add_argument("--max-slope", type=float, default=None,
+                    help="cap the STEEPEST cell anywhere on the terrain at this "
+                         "many degrees, overriding --relief. Slope is exactly "
+                         "linear in relief (the quantised heightmap shape is fixed "
+                         "and elevation is pixel/255*relief), so this is solved in "
+                         "closed form, not searched. Prefer this over --relief when "
+                         "what you care about is 'nothing steeper than X'.")
     ap.add_argument("--seed", type=int, default=3, help="terrain RNG seed")
     ap.add_argument("--pad-radius", type=float, default=1.5,
                     help="radius of the flat spawn pad [m] (default 1.5)")
@@ -356,6 +363,19 @@ def main():
     # and the elevation is then simply (pixel / 255) * relief.
     pix = np.rint(z01 * 255.0).astype(np.uint8)
     pix[np.unravel_index(np.argmax(z01), z01.shape)] = 255
+
+    # --max-slope resolves to a relief. The quantised shape `pix` does not depend on
+    # relief (elevation is pixel/255 * relief), so the steepest grade in the world is
+    # exactly relief * max|grad(pix/255)| — invert that instead of searching. Doing it
+    # on the QUANTISED image means the number reported below is the one physics sees.
+    if args.max_slope is not None:
+        cell = ext / (n - 1)
+        d_row, d_col = np.gradient(pix.astype(np.float64) / 255.0, cell)
+        grade_per_m = float(np.hypot(d_col, -d_row).max())
+        if grade_per_m <= 0.0:
+            ap.error("terrain is perfectly flat — --max-slope has nothing to scale")
+        args.relief = float(np.tan(np.radians(args.max_slope)) / grade_per_m)
+
     height_png = os.path.join(out_dir, "terrain_height.png")
     Image.fromarray(pix).save(height_png)
 

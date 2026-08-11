@@ -69,6 +69,8 @@ install(PROGRAMS
   scripts/probe_leg_odom.py
   scripts/leg_odom_model.py
   scripts/make_terrain_world.py
+  scripts/terrain_adapt.py
+  scripts/run_report.py
   DESTINATION lib/${PROJECT_NAME})
 
 # ---- Tests

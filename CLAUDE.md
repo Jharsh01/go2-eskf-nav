@@ -96,17 +96,30 @@ ros2 launch unitree_go2_sim unitree_go2_launch.py            # add rviz:=true fo
 ros2 launch go2_eskf eskf.launch.py use_sim_time:=true                # GPS off (default)
 ros2 launch go2_eskf eskf.launch.py use_sim_time:=true use_gps:=true  # only if navsat is fixed
 
+# Run BOTH estimator arms at once against the same sensor stream: the baseline
+# (fixed R_leg -> /eskf/odom) and the slip-adaptive one (use_slip_model -> /eskf_slip/odom).
+# Same params, same inputs, so the difference between them IS the slip model — and the
+# run-to-run variance that makes two separate runs incomparable cancels out.
+ros2 launch go2_eskf eskf.launch.py use_sim_time:=true slip:=true
+
 # Convenience launcher: opens gnome-terminals for sim, keyboard teleop
 # (teleop_twist_keyboard → /cmd_vel), and the ESKF. The ESKF waits for /odom/raw
 # (leg odom) AND /gps/fix before starting, so it never dead-reckons before its
 # corrections exist (skipping this lets position run away to tens of km — position
 # is unobservable without a velocity+position anchor from t=0).
+#
+# TWO estimator arms run by default (baseline + slip-adaptive, see eskf.launch.py
+# slip:=true above), so --plot/--square shows all three curves and REPORT.md scores
+# both. `--no-slip` goes back to a single estimator.
 ./run_go2_teleop.sh                    # rviz on, GPS on, NVIDIA rendering
 ./run_go2_teleop.sh --plot             # + ground-truth bridge + live XY/error plot
 ./run_go2_teleop.sh --software-render   # CPU (llvmpipe) rendering fallback (see gotcha below)
 
-# Live estimate-vs-ground-truth trajectory plot (clamped XY view + error-vs-time).
-# Needs ground_truth.launch.py running for the truth overlay; --no-truth otherwise.
+# Live trajectory plot (clamped XY view + error-vs-time). Draws THREE curves —
+# ground truth, baseline estimate (/eskf/odom), slip-adaptive estimate (/eskf_slip/odom) —
+# with one error trace per estimator arm. Needs ground_truth.launch.py for the truth
+# overlay (--no-truth otherwise) and eskf.launch.py slip:=true for the third curve
+# (--no-slip, or --wait-slip N to drop it from the legend if it never publishes).
 ros2 run go2_eskf plot_trajectory.py --ros-args -p use_sim_time:=true
 ```
 
@@ -260,14 +273,58 @@ must match `NavigationNode::buildDemoMap()`. The Go2 GPS origin lives in
 | `--terrain` | `go2_eskf/worlds/terrain.sdf` | uneven heightmap + low-friction patches |
 
 `terrain.sdf` is **generated** by `scripts/make_terrain_world.py` (a fractal heightmap plus
-four `mu=0.08` patches on the 10 m square). It exists because the flat world has a rigid
+four `mu=0.3` patches on the 10 m square). It exists because the flat world has a rigid
 no-slip floor and so produces *no slip at all* — the slip model has nothing to detect there.
-`--relief` is the difficulty knob (square-path median/max slope: 0.6 m → 3.2°/14.4°,
-0.7 m (default) → 3.7°/16.6°, 1.0 m → 5.2°/23.1°, 1.6 m → 8.4°/34.3°); CHAMP's blind gait
-already falls occasionally on flat ground, so raise it gradually. The start pad is flat at
-elevation 0, so the robot spawns exactly as it does over `flat.sdf` and flat-vs-terrain runs
-start from an identical pose. **Reverting to flat is just dropping the flag** — `flat.sdf` is
-never touched.
+Difficulty is set either by `--relief` (peak elevation) or, preferably, by **`--max-slope DEG`**,
+which caps the steepest cell anywhere and solves the required relief in closed form (slope is
+exactly linear in relief). The **current world is `--max-slope 11.3`** → relief 0.40 m, slope
+median 2.0° / max 11.3°, square path median 2.1° / max 9.6°. For reference by relief:
+0.6 m → 3.2°/14.4°, 0.7 m → 3.7°/16.6°, 1.0 m → 5.2°/23.1°, 1.6 m → 8.4°/34.3° (square-path
+median/max). CHAMP's blind gait already falls occasionally on flat ground, so raise it
+gradually — **it stalled outright on a sustained 11.9° climb** (see `skills.md` §0 "Terrain
+BLOCKER"), which is why the cap exists. The start pad is flat at elevation 0, so the robot
+spawns exactly as it does over `flat.sdf` and flat-vs-terrain runs start from an identical
+pose; note the pad **blend** (`--pad-radius`/`--pad-blend`) concentrates the flat→relief
+transition into a narrow annulus, so the steepest part of the route can sit a couple of metres
+from spawn. **Reverting to flat is just dropping the flag** — `flat.sdf` is never touched.
+
+### Run report — read this instead of asking for screenshots
+
+**Every `run_go2_teleop.sh` run writes `run_report/REPORT.md`** (`--no-report` disables).
+Everything in `run_report/` is **overwritten each run**, so it costs a fixed ~0.5 MB
+regardless of how many runs happen. `run_report/` is gitignored.
+
+| file | contents |
+|------|----------|
+| `REPORT.md` | config (flags/world/gains/gait), outcome + **stall detector** (where progress stopped while still commanded), terrain elevation & slope under the ground-truth path, gait health (per-leg contact duty, **joint tracking error** = the stance-sag metric, leg-odom degenerate %), estimator ATE/final/yaw error **with one column per estimator arm** (baseline vs slip-adaptive), topic rates with **MISSING topics flagged**, and de-duplicated WARN/ERROR lines from every node |
+| `timeseries.csv` | 29-column merged series at 5 Hz, hard row cap (decimates itself on overflow) |
+| `context.txt` | launcher flags/world/gains (written by the shell) |
+| `node_logs/` | per-node stdout, copied by `cleanup()` **before** it deletes its scratch dir — otherwise this is lost |
+
+Implemented by `scripts/run_report.py` (passive subscriber, starts at t=0, rewrites the
+report every 20 s as well as at shutdown). The flush timer runs on **wall** time on
+purpose: if gz never starts, `/clock` never advances and sim-time timers never fire — the
+run that most needs a report. Verified: with no `/clock` at all it still lands a report
+whose topic table reads `0 — NEVER RECEIVED` for everything.
+
+### Slope locomotion: the two CHAMP adaptations (both first-party, both A/B flags)
+
+CHAMP is **blind and has zero terrain adaptation**: `quadruped_controller.cpp` sets
+`req_pose_.position.z = nominal_height` once and never touches orientation, `req_pose_` moves
+only via the `/body_pose` topic, and nothing in the vendored launch publishes it. So all four
+feet are held on one plane in the base frame forever. Two first-party, independently
+switchable fixes exist; **neither is validated in sim yet**:
+
+| flag | what it does |
+|------|--------------|
+| `--adapt` | runs `scripts/terrain_adapt.py`, which publishes `/body_pose`: shifts the body uphill (`com_shift_x`), crouches on slopes (`crouch`), and optionally levels the body against the ground (`level_pitch`, default 0 = stock). Attitude comes from a low-passed accelerometer, not the gz IMU orientation (unreliable) or the ESKF (yaw-only). All gains 0 ⇒ bit-for-bit stock. |
+| `--stiff` | points the launch's `ros_control_file` arg at `go2_eskf/config/ros_control_stiff.yaml` (p 100→300, d 1.0→3.5). The stock effort-mode PID gives away ~3 cm of stance sag under the 15.1 kg robot — stroke the climb never gets. Actuators have 2.4× headroom and gz ignores URDF command limits, so the torque is really applied. Vendored `ros_control.yaml` untouched. |
+
+`--climb` is shorthand for `--terrain --adapt --stiff`. A/B them **one at a time**.
+**Read `src/go2_eskf/docs/SLOPE_POSTURE.md` before touching either** — it derives the
+posture geometry (CoM projection `Δ = h·tan γ`, the ideal `com_shift_x = h = 0.225`, why
+`level_pitch = 1.0` only halves the pitch, why swing height and ground friction were never
+the constraint, and why 11.3° is exactly the walkable limit of the μ=0.3 patches).
 
 Measured facts about gz heightmaps (gz sim 8.11), all established by experiment:
 - Heightmap collision **works** under `bullet-featherstone`, and `<surface><friction><ode><mu>`

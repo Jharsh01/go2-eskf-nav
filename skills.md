@@ -264,6 +264,290 @@ aborts rather than writing bad XML.
   so they learned to fire on gait tracking error; do not carry them over. Enable with
   `use_slip_model: true` + `slip_model_path` once retrained.
 
+### FIRST COMPLETED TERRAIN SQUARE + slip is REAL but NOT DETECTABLE (2026-08-02, 15:41 run)
+
+`./run_go2_teleop.sh --terrain --square`, **stock gains, no `--adapt`**, on the re-cut
+11.3 deg-capped terrain. 257.6 s, 46.34 m, all four corners:
+(0,0) -> (9.74,+0.08) -> (9.41,-9.79) -> (0.46,-7.58) -> (0.03,-0.22). **No fall, no
+stall.** The previous terrain run died at 2.55 m. **The terrain re-cut ALONE unblocked
+locomotion — `--stiff` and `--adapt` were not needed and remain unvalidated.**
+
+Estimator: ATE mean **1.94 m**, max **3.22 m**, yaw mean 10.9 / final 15.0 deg. Final
+position error 0.30 m (0.66% of path) is MEANINGLESS — the square returns to its start and
+a heading-rotated trajectory comes back with it. **Quote ATE/max, never final.** 15 deg ->
+~3 m sits exactly on the historical yaw-vs-position line, so this run is in-family.
+
+Gait: stance duty 60% and symmetric (59.9/60.8/60.8/59.9). Joint tracking error mean
+**9.31 deg**, max 21.9 -> ~16 Nm -> ~3 cm of continuous foot sag at p=100. Worst joints are
+the **REAR calves** (rh 6.79, lh 6.41) vs front (rf 4.90, lf 4.78) = **1.4:1 rear bias**,
+against the 1.6:1 load transfer SLOPE_POSTURE.md section 3 predicts. Best evidence yet that
+`--stiff` is worth a run. Ground-truth attitude |pitch| median 2.3 max 14.8 deg.
+
+**SLIP IS REAL, and measured.** Path crossed the mu=0.3 patches for 66.8 s of 228.8 s
+commanded (29%). Signed leg-odom velocity bias vs truth:
+
+    OFF patch  -13.3 mm/s   (under-reads)
+    ON  patch   +5.7 mm/s   (OVER-reads)   <-- the sign FLIPS
+
+That flip is the stance-foot assumption breaking: a foot sliding backward under load is
+read by forward kinematics as body translation that never happened. Accumulated, the
+on-patch segments contributed +0.38 m where the off-patch bias would have given -0.89 m,
+so **slip injected ~1.3 m of position error — ~40% of the 3.22 m peak, from 29% of the
+run.**
+
+**BLOCKER (negative result): slip is NOT detectable from any currently-logged onboard
+signal.** Patch vs non-patch separation, Cohen's d:
+
+    feet in contact       2.000 vs 2.000    d = 0.00   <-- information-free
+    joint tracking error   9.73 vs 10.01    d = -0.11
+    |accel|               14.04 vs 13.22    d = +0.12
+    terrain slope          2.42 vs  2.39    d = +0.02
+    |leg wz|              0.405 vs 0.571    d = -0.44  (confounded by turning)
+    |leg vx|              0.187 vs 0.170    d = +0.18
+
+`feet in contact` is EXACTLY 2.000 on and off. CHAMP's `/foot_contacts` is a gait-phase
+estimate from the trajectory planner, not a contact sensor, so **`contact_frac_` — the
+planned slip feature, currently dead code frozen at 1.0 — cannot work even once it is
+wired up.** Do not spend more effort there.
+
+**The one untested signal is the filter's own INNOVATION.** `nu = z_leg - h(x) =
+v_body,legodom - Rz(-psi) v_world_hat` is already computed every `correctLegOdom` and is
+exactly "leg odom says moving, the IMU says we did not accelerate that way". Normalised by
+`S = H P H' + R` it is the NIS: chi-2 distributed when the model holds, spiking when it
+does not. Next steps, in order:
+1. **Log `nu` and NIS** from `eskf_node` into the CSV and run_report, re-run this same
+   course, and test patch-vs-non-patch separation. This is the GO/NO-GO — if the innovation
+   does not separate, no slip model works with these sensors.
+2. If it separates, **use it directly**: NIS-gated covariance inflation / a robust (Huber)
+   update beats a learned model — no training set, no retraining when the gait changes,
+   graceful degradation.
+3. Only then revisit the neural model, and retrain from scratch (existing weights learned
+   gait tracking error on a world with no slip) with an innovation feature, not
+   `contact_frac_`.
+
+**Ceiling to remember:** the slip model can only address the ~1.3 m velocity-bias
+component. Yaw is exactly unobservable with GPS off, so the 10.9 deg heading drift is
+untouched by anything done to leg-odom covariance. Slip gating is the cheap win; an
+absolute heading reference is still the big one.
+
+**Three run_report bugs this run exposed (all fixed, re-verified against its CSV):**
+- Stall detector armed on a single commanded sample at the window's END -> tripped on the
+  ~10 s warm-up every run. Now requires the whole window commanded.
+- Stall detector measured POSITION only -> `square_test` turning in place at a corner
+  (measured: 260 deg of yaw for 35 cm of travel) read as a stall. Progress is now
+  `displacement + 0.1934 * |dyaw|`. Fixed detector on this run: worst 9 s progress 36.5 cm,
+  **never stalled**.
+- Reported "body pitch from IMU max 67.8 deg" against a ground truth of **14.8 deg** —
+  instantaneous accel during a trot is rotating and impact-spiking, so single samples are
+  not attitude. Report now prints GROUND-TRUTH attitude and caveats the IMU number.
+
+### RUN REPORT: stop debugging from screenshots (2026-08-02)
+
+`scripts/run_report.py`, on by default in `run_go2_teleop.sh` (`--no-report` disables).
+**Read `run_report/REPORT.md` first, every time.** Everything in `run_report/` is
+OVERWRITTEN each run — fixed ~0.5 MB forever, gitignored.
+
+It exists because this session burned two rounds of digging: `~/.ros/log` had to be
+hand-read, the terrain slope at the stall point had to be re-derived from the PNG by hand,
+and the launcher's own per-node logs were being `rm -rf`'d on exit. All three are now
+captured automatically.
+
+What it answers without a screenshot:
+- **did it stall, when, and where** — sliding-window progress detector, only armed while
+  `/cmd_vel` is non-zero (so standing still on purpose is not a stall)
+- **was it the hill** — elevation AND slope sampled from the world's own heightmap at the
+  ground-truth (x,y), with the steepest point and its timestamp
+- **are the gains too soft** — joint tracking error, commanded `joint_trajectory` vs
+  measured `joint_states`. This is the stance-sag metric (SLOPE_POSTURE.md §2): 0.134 rad
+  = 7.7 deg = ~74 N of push = ~2.9 cm of sag at p=100
+- **per-leg contact duty**, leg-odom degenerate %, IMU |accel| peaks (contact impacts)
+- **estimator** ATE / max / final position error, yaw error, error as % of path
+- **which topic never appeared** — the single most common silent failure here
+- **WARN/ERROR from every node**, de-duplicated
+
+Design points worth not re-litigating:
+- The flush timer runs on **WALL** time, not sim time. With `use_sim_time:=true` and gz
+  dead, `/clock` never advances and sim-time timers never fire — i.e. no report for
+  exactly the run that needs one. Verified: with no `/clock` at all it still writes a
+  report whose topic table is all `0 — NEVER RECEIVED`.
+- `cleanup()` copies `$LOGDIR/*.log` into `run_report/node_logs/` **before** signalling
+  anything, so run_report's shutdown write can mine them. Order matters.
+- CSV is row-capped: on overflow it drops every other row and halves the rate, so a
+  runaway run cannot fill the disk.
+- `Node.context` is a real rclpy attribute — do not name a method `context()` on a Node
+  (cost one crash: `'function' object has no attribute 'handle'` from `create_timer`).
+
+### BOTH estimator arms now run in ONE run — three curves in one plot (2026-08-11)
+
+The slip-adaptive estimator used to be a *separate run* (`benchmark.launch.py
+scenario:=adaptive`), so comparing it with the baseline meant comparing two different
+square runs — worthless here, because run-to-run variance dominates (§0 HEADLINE, 4°–97°
+of yaw error from identical configs). Now both arms run **simultaneously against the same
+sensor stream**:
+
+| arm | node | topic | difference |
+|---|---|---|---|
+| baseline | `eskf_node` | `/eskf/odom` | fixed `R_leg` |
+| slip-adaptive | `eskf_slip_node` | `/eskf_slip/odom` | `use_slip_model:=true`, `R_leg ← R_leg·(1+λ·slip)²` |
+
+Everything else — params file, IMU, leg odom, cmd_vel, joint states, GPS setting — is
+identical, so the difference between the two curves **is** the slip model, on one run,
+with the variance cancelled. That is the only way this comparison is worth anything.
+
+- `eskf.launch.py slip:=true` starts the second arm (`slip_model_path`, `slip_odom_topic`
+  are args). It is `false` by default, so nothing else changes.
+- `run_go2_teleop.sh` passes `slip:=true` **by default**; `--no-slip` reverts to one arm.
+- `plot_trajectory.py` draws **three** curves (truth, baseline, slip-adaptive) and one
+  error trace per arm in the right panel. `--wait-slip N` drops the third curve from the
+  legend if the topic never appears (the launcher passes 30 s), `--no-slip` disables it.
+- `REPORT.md`'s estimator table has **one column per arm**, plus a one-line verdict; the
+  CSV gains `slip_x, slip_y, slip_yaw, slip_err_pos, slip_err_yaw`. `/eskf_slip/odom` is
+  registered as *optional*, so with `--no-slip` it reads `not running (optional)` instead
+  of the loud `NEVER RECEIVED`.
+- Diagnostic topics of the second arm are remapped (`eskf_slip/slip`,
+  `eskf_slip/gyro_bias`), otherwise both arms would publish onto the same names. Its
+  `publish_tf` is forced false — the baseline owns `map→base_link`.
+
+Cost: one extra ESKF instance (IMU-rate predict + an 8-input MLP), negligible next to gz.
+Verified offline: both nodes come up and the slip weights load; the plot renders all three
+curves in truth/no-truth/no-slip modes; the report writes a 34-column CSV and a two-column
+estimator table. **Not yet run against the live sim** — and one run still proves nothing.
+
+### Terrain BLOCKER: CHAMP stalls on the start-pad blend ramp at ~12 deg (2026-08-02)
+
+`square_test` aborted 84 s into a terrain run, 0/4 corners done:
+
+    ROBOT FELL/STUCK at truth=(+2.55,+0.42) after 0/4 corners
+    — no progress for 9.0 s while commanded to move (14 cm, 8 deg)
+
+Nothing crashed. gz, `controller_manager`, both controllers, `quadruped_controller`,
+`state_estimation` and `eskf_node` all ran healthy through to a clean SIGINT 48 s later.
+`eskf_node`'s degenerate (all-zero leg odom = stopped) fraction climbing back 27.9% ->
+40.2 -> 48.9 -> 55.3 -> 60.4% after the abort confirms the robot was standing still, not
+that the sim died. **The stall detector was right; this is a gait failure.**
+
+**What is at (2.55, 0.42)** — sampled straight out of `terrain_height.png`
+(col->+X, row0->+Y max, z = px/255 * 0.7):
+
+    x[m]   1.50  1.75  2.00  2.25  2.50  2.75  3.00  3.25  3.50
+    z[m]  0.002 0.019 0.051 0.099 0.151 0.204 0.254 0.294 0.316
+    slope  0.4   3.9   7.5  10.8  11.9  11.9  11.3   9.0   5.0   deg
+
+It died at the steepest point of a sustained 11-12 deg climb — 3.2x the square path's
+median slope (3.7 deg) and near its max (16.6 deg). **This is NOT the ice**:
+`slip_patch_0` spans x in [3.5, 6.5] at y=0, ~1 m further on. The robot never reached a
+patch.
+
+**The ramp is an artifact of the start pad, not of `--relief`.** `--pad-radius 1.5
+--pad-blend 2.5` compresses the whole flat-pad -> full-relief transition into a 2.5 m
+annulus, so the hardest climb on the entire route sits 2 m from spawn and is hit in the
+first ~12 s, before the trot settles.
+
+**DISPROVED: swing height is not the fix.** `swing_height: 0.08` (edit §5.7) was already
+live for this run — gait.yaml mtime 13:36:19, sim launched 13:38:47, config is
+symlink-installed. Doubling clearance did not get it up the ramp, and the arithmetic says
+it never could: step length = `raibertHeuristic * 2` = `(stance_duration/2)*v*2` =
+0.25*0.25 = **6.25 cm/step**, so an 11.9 deg slope rises **1.3 cm per step** against an
+8 cm swing apex — 6x margin even at the old 0.04.
+
+**Friction is not it either.** Neither `flat.sdf` nor `terrain.sdf` sets
+`<surface><friction>` on the ground, so both take the gz default mu=1.0, far above the
+tan(11.9 deg)=0.21 needed to stand. Terrain is no more slippery than flat outside the
+deliberate mu=0.3 patches.
+
+**The actual cause: CHAMP has ZERO terrain adaptation.**
+`quadruped_controller.cpp:100` sets `req_pose_.position.z = nominal_height` once and never
+touches orientation; `req_pose_` changes only via the `/body_pose` topic, and **nothing in
+the launch publishes it**. So `BodyController::poseCommand` holds all four feet on a single
+plane 0.225 m below the hips in the BASE frame at zero roll/pitch for the whole run — no
+IMU feedback into foot placement, no per-leg height offset, no pitch compensation, no
+balance term. On a sustained incline the front feet contact early and the rear reach into
+air, the body pitches up, stance shortens, and the trot degenerates into stepping in place.
+That is exactly the "14 cm in 9 s while commanded to move" the detector saw.
+
+### What was SHIPPED for it (2026-08-02, later) — all three UNVALIDATED in sim
+
+**1. Terrain re-cut with a hard slope cap.** New generator option `--max-slope DEG`. Slope
+is *exactly* linear in relief — the quantised heightmap shape does not depend on relief and
+elevation is `pixel/255 * relief` — so the required relief is `tan(cap)/max|grad(pix/255)|`,
+solved in closed form on the QUANTISED image (so the reported number is the one physics
+sees), not searched. Regenerated with:
+
+    python3 src/go2_eskf/scripts/make_terrain_world.py --max-slope 11.3
+
+    relief resolved 0.70 -> 0.40 m
+    slope        median 3.6 -> 2.0 deg, 95th 7.5 -> 4.3, max 19.5 -> 11.3
+    square path  median 3.7 -> 2.1 deg, max 16.6 -> 9.6
+    patch slopes 9.8/7.3/9.7/10.3 -> 5.6/4.1/5.5/5.9 deg (mu=0.3 now comfortable)
+    THE KILLER RAMP at x=2.0..3.1: 11.9 -> 6.9 deg peak
+
+**2. `--adapt`: slope-adaptive body posture** — `scripts/terrain_adapt.py`, first-party, new.
+Publishes the `/body_pose` topic CHAMP already subscribes to but nobody ever fed, at 50 Hz:
+
+    position.x  = com_shift_x * sin(pitch)        shift body UPHILL (CoM into support)
+    position.z  = -crouch * |sin(pitch)|          crouch on slopes (DELTA on nominal_height,
+                                                  cmdPoseCallback_ adds it back — no collapse trap)
+    orientation = RPY(-level_roll*roll, -level_pitch*pitch, 0)
+
+Defaults `com_shift_x 0.15`, `crouch 0.10`, `level_pitch 0.0`. **All gains 0 == bit-for-bit
+stock**, so it is a clean A/B arm. `level_pitch` is real feedback on measured attitude (0 =
+body follows terrain, 1 = body level in world) and is OFF by default — raise it deliberately
+and watch for oscillation. Attitude comes from a low-passed accelerometer (tau 0.7 s) with
+impact rejection by |f|, because the gz IMU orientation is unreliable and the ESKF is
+yaw-only. Cost: ~18 cm of lag at 0.25 m/s — fine for slopes that change over metres.
+
+Signs verified offline against a synthetic tilted IMU (no sim), which is the risky part:
+
+    +11.3 deg climb  -> body +2.94 cm forward, -1.96 cm height, cmd pitch  0.0 deg
+    +11.3, level=1.0 -> body +2.94 cm forward, -1.96 cm height, cmd pitch -11.3 deg
+    -11.3 deg descent-> body -2.94 cm forward, -1.96 cm height, cmd pitch  0.0 deg
+
+**3. `--stiff`: 3x joint PD** — `go2_eskf/config/ros_control_stiff.yaml` (p 100->300,
+d 1.0->3.5), selected via the launch's existing `ros_control_file` arg, which feeds both
+`controller_manager` and the xacro's `gz_ros2_control <parameters>`. **No vendored edit.**
+The arithmetic: 15.10 kg (6.921 trunk + 4x2.044 leg) = 148 N; a trot puts ~74 N on each of
+two feet; ~0.2 m moment arm => ~15 Nm at the knee; at p=100 that needs 0.15 rad of tracking
+error = **~3.2 cm of foot sag, 14% of nominal_height** — stroke the stance never delivers,
+which is exactly "steps but does not advance". Not an actuator limit: `calf_torque_max` is
+35.55 Nm (2.4x headroom) and gz logs "Enforcing command limits is disabled". p=300 -> ~1.1 cm.
+d follows sqrt(p) with light links (I~0.01 kg m^2): 2*sqrt(300*0.01) ~ 3.5; the stock d=1.0
+was under-damped even at p=100. CAVEAT: trades sim realism for gait robustness — a real Go2
+cannot hold 300 Nm/rad at 100 Hz, so leg-odom tracking here is optimistic. Keep A/B arms on
+ONE gain set.
+
+`./run_go2_teleop.sh --climb` = `--terrain --adapt --stiff`. **A/B them ONE AT A TIME.**
+
+**Theory written up: `src/go2_eskf/docs/SLOPE_POSTURE.md`** — read it before retuning any
+of this. Results worth knowing without opening it:
+- The slope problem is the **CoM gravity projection** `Δ = h·tan(gamma)`, not height.
+  4.50 cm downhill at 11.3 deg = 23% of the half-base, which transfers the four-foot load
+  from 50/50 to **38/62 front/rear** (1.61:1). Front feet lose 23% of their friction, rear
+  work hardest. Tip-over is at `atan(a/h)` = 40.7 deg — never the issue.
+- **Ideal `com_shift_x` = h/cos(gamma) ~ h = 0.225**, i.e. the ideal CoM-shift gain is just
+  the body height. The 0.15 default is deliberately 2/3 of it (65% compensation, front load
+  back to 46%). Raise it toward 0.225 FIRST if a climb still fails.
+- **`crouch` barely touches the CoM problem** — 2 cm of crouch buys back 4 mm of the 4.5 cm
+  shift (<10%). It is a dynamic-margin knob, not a slope-compensation one.
+- **`level_pitch = k` retains `gamma/(1+k)` of the ground slope**, so k=1.0 only HALVES the
+  pitch, it does not level. Keep k <= 1 (the 0.7 s attitude lag + body dynamics will ring).
+  Default 0 is also the geometrically better choice: `beta_r = 0` equalises leg extension
+  and torque and keeps swing clearance perpendicular to the ground.
+- Stance sag at the stock p=100 is **2.85 cm (12.7% of nominal_height)** at 74 N/foot, vs
+  0.95 cm at p=300. Knee torque only varies 12.4-14.2 Nm across the whole leg-extension
+  range, so crouching/levelling are cheap in torque; the sag is the expensive part.
+- **11.3 deg is exactly `atan(mu/1.5)` for mu=0.3** — the walkable limit of the slip
+  patches. Above it the patches stop being a slip experiment and become an unconditional
+  fall. That is the principled justification for the cap, not just "less steep".
+
+Untried, still open, in order of cheapness:
+- **Slow down**: 0.25 m/s is 83% of `max_linear_velocity_x` (0.3). Try v=0.15 in `square_test`.
+- **Lower/lengthen the gait**: `nominal_height` 0.225 -> 0.20, `stance_duration` 0.25 -> 0.30.
+- **Widen the pad blend** (`--pad-blend 6.0`) if the ramp is still what kills it — but the
+  slope cap already took that ramp to 6.9 deg, so this is probably redundant now.
+
+Confirm the stall location over >=2 runs before drawing conclusions: the *terrain* is
+deterministic, but whether the trot survives a given ramp is not.
+
 ### Next steps (in order)
 
 1. **Re-run `probe_leg_odom.py`** (~1 min of sim, not 6.5) and check the four predictions
@@ -942,9 +1226,9 @@ ros2 topic echo /odom/raw --field twist.twist.linear.x   # expect ~0.15 while wa
   `pkill -f gz-sim-server` matches NOTHING. The real names are `gz sim`, `gz sim server`,
   `gz sim gui`.
 
-## 5. Deliberate vendored edits (6)
+## 5. Deliberate vendored edits (7)
 
-The workspace prefers first-party changes, but six vendored edits are intentional:
+The workspace prefers first-party changes, but seven vendored edits are intentional:
 1. **Ground-truth OdometryPublisher** in `unitree_go2_gazebo.xacro` (for benchmarking).
 2. **Perception sensors DISABLED** — commented out in `unitree_go2_robot.xacro` (the
    velodyne / 4D-lidar / D455 includes) and `unitree_go2_gazebo.xacro` (`rgb_camera`
@@ -982,6 +1266,21 @@ The workspace prefers first-party changes, but six vendored edits are intentiona
    `src/go2_eskf/scripts/leg_odom_model.py`. The `allFeetInContact()` early return is
    deliberately left alone — its literal zeros are the flag `eskf_node`'s ZUPT path keys
    on. Rebuild `champ` AND `champ_base`.
+7. **Swing height doubled, 0.04 → 0.08 m** — `unitree_go2_sim/config/gait/gait.yaml`
+   (2026-08-02). On the terrain world's low-friction patches the rear feet were seen
+   dragging/scuffing rather than clearing (screenshot, 22:02 run). CHAMP scales foot
+   clearance linearly in this parameter — `TrajectoryPlanner::updateControlPointsHeight`
+   sets `height_ratio = swing_height / 0.15` and multiplies every Bézier control point by
+   it — so 0.04 → 0.08 doubles the swing apex; the endpoints stay on the stance plane, so
+   step length and stance are untouched. The same YAML feeds BOTH `quadruped_controller`
+   and `state_estimation`, so leg odometry's foot model stays consistent with the
+   commanded gait. Config is symlink-installed: **no rebuild, just relaunch the sim.**
+   **It does NOT fix hill climbing** — see §0 "Terrain BLOCKER": the 13:38 run already had
+   0.08 and still stalled on the 12 deg ramp, and 6.25 cm steps only rise 1.3 cm per step,
+   so clearance was never the binding constraint. Whether it helps the ice-patch scuffing
+   that motivated it is still UNMEASURED. Watch for the opposite failure (higher apex in
+   the same swing time = faster descent = harder touchdown → more contact-impact accel
+   spikes and more slip on landing). Revert = set it back to 0.04.
 
 ## 6. Files changed this session
 

@@ -285,6 +285,7 @@ void EskfNode::legOdomCallback(const nav_msgs::msg::Odometry::SharedPtr msg) {
     const Eigen::Matrix2d R = zupt ? R_zupt_ : legCovarianceForUpdate(vx, vy);
     eskf_->correctLegOdom(v_body, R);
     // Leg yaw rate is bias-free, so (gyro - leg) observes the gyro bias directly —
+    // the main lever against long-horizon yaw drift
     // the main lever against long-horizon yaw drift with no absolute heading.
     //
     // BUT only while the robot is NOT rotating. MEASURED 2026-07-26: the residual

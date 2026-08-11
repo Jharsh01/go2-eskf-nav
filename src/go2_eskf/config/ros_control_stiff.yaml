@@ -1,0 +1,100 @@
+# Stiffer joint PD for slope walking — a drop-in replacement for the vendored
+# unitree_go2_sim/config/ros_control/ros_control.yaml, selected WITHOUT editing it:
+#
+#   ros2 launch unitree_go2_sim unitree_go2_launch.py \
+#     ros_control_file:=$PWD/install/share/go2_eskf/config/ros_control_stiff.yaml
+#   ./run_go2_teleop.sh --terrain --stiff        # same thing
+#
+# The launch arg feeds both the controller_manager params AND the xacro's
+# gz_ros2_control <parameters> block, so one path switches everything.
+#
+# WHY. `joint_group_effort_controller` is a JointTrajectoryController on the EFFORT
+# interface: commanded torque is a PID on joint POSITION error, so the leg only pushes
+# as hard as its tracking error times p. The stock p=100 Nm/rad is soft for this robot:
+#
+#   mass       6.921 (trunk) + 4 x 2.044 (leg) = 15.10 kg  ->  148 N
+#   trot       2 feet in stance  ->  ~74 N per foot
+#   torque     ~74 N x ~0.2 m moment arm         ->  ~15 Nm at the knee
+#   at p=100   15 Nm needs 0.15 rad of error     ->  ~3.2 cm of foot sag
+#              i.e. 14% of nominal_height (0.225 m) is given away as droop.
+#
+# That sag is stroke the stance never delivers, which is exactly the "steps but does
+# not advance" failure on an incline. The actuators are NOT the limit — calf_torque_max
+# is 35.55 Nm (2.4x headroom) and gz_ros_control logs "Enforcing command limits is
+# disabled. Command limits from URDF will be ignored", so the extra torque is actually
+# applied. p=300 cuts the sag to ~1.1 cm.
+#
+# d is raised with it. Damping for near-critical response goes as sqrt(p), and the leg
+# links are light (thigh 1.152 kg, calf 0.154 kg, I ~ 0.01 kg m^2 about the knee), so
+# 2*sqrt(300*0.01) ~ 3.5. The stock d=1.0 was already under-damped at p=100.
+#
+# CAVEAT: this trades sim realism for gait robustness. A real Go2 cannot hold 300 Nm/rad
+# with a 100 Hz loop, so leg-odometry numbers taken here are optimistic about tracking.
+# Keep A/B arms on ONE gain set. Reverting = drop the flag; the vendored file is untouched.
+
+controller_manager:
+  ros__parameters:
+    use_sim_time: true
+    update_rate: 100  # Hz
+
+    controller_manager_timeout: 10.0
+
+    joint_states_controller:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    joint_group_effort_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+joint_states_controller:
+  ros__parameters:
+    use_sim_time: true
+
+joint_group_effort_controller:
+  ros__parameters:
+    use_sim_time: true
+    joints:
+        - lf_hip_joint
+        - lf_upper_leg_joint
+        - lf_lower_leg_joint
+        - rf_hip_joint
+        - rf_upper_leg_joint
+        - rf_lower_leg_joint
+        - lh_hip_joint
+        - lh_upper_leg_joint
+        - lh_lower_leg_joint
+        - rh_hip_joint
+        - rh_upper_leg_joint
+        - rh_lower_leg_joint
+
+    command_interfaces:
+      - effort
+    state_interfaces:
+      - position
+      - velocity
+
+    allow_partial_joints_goal: true
+
+    state_publish_rate: 100.0
+    action_monitor_rate: 20.0
+
+    constraints:
+      stopped_velocity_tolerance: 0.01
+      goal_time: 0.0
+
+    hold_trajectory_duration: 0.0
+    action_tolerance: 1.0
+
+    # stock was {p: 100.0, i: 0.2, d: 1.0, i_clamp: 2.5} on every joint
+    gains:
+      lf_hip_joint        : {p: 300.0, i: 0.2, d: 3.5, i_clamp: 2.5}
+      lf_upper_leg_joint  : {p: 300.0, i: 0.2, d: 3.5, i_clamp: 2.5}
+      lf_lower_leg_joint  : {p: 300.0, i: 0.2, d: 3.5, i_clamp: 2.5}
+      rf_hip_joint        : {p: 300.0, i: 0.2, d: 3.5, i_clamp: 2.5}
+      rf_upper_leg_joint  : {p: 300.0, i: 0.2, d: 3.5, i_clamp: 2.5}
+      rf_lower_leg_joint  : {p: 300.0, i: 0.2, d: 3.5, i_clamp: 2.5}
+      lh_hip_joint        : {p: 300.0, i: 0.2, d: 3.5, i_clamp: 2.5}
+      lh_upper_leg_joint  : {p: 300.0, i: 0.2, d: 3.5, i_clamp: 2.5}
+      lh_lower_leg_joint  : {p: 300.0, i: 0.2, d: 3.5, i_clamp: 2.5}
+      rh_hip_joint        : {p: 300.0, i: 0.2, d: 3.5, i_clamp: 2.5}
+      rh_upper_leg_joint  : {p: 300.0, i: 0.2, d: 3.5, i_clamp: 2.5}
+      rh_lower_leg_joint  : {p: 300.0, i: 0.2, d: 3.5, i_clamp: 2.5}
