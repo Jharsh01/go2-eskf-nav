@@ -13,9 +13,54 @@ have fixed the heading drift. Live A/B still pending.
 
 ## 0. CURRENT STATE (start here)
 
-**LATEST (2026-07-28 — CHAMP leg odometry re-derived as a least-squares body twist; two
+---
+
+### ⏱ SESSION HANDOFF — 2026-08-11 (RESUME HERE)
+
+Branch `fix/sim-readiness-guard-and-drift-baseline`, pushed through `df74c58`, clean tree.
+Newer entries in this section are ordered oldest-first, so read this block, then jump to
+"BOTH estimator arms now run in ONE run" and "FIRST dual-arm terrain square" below.
+
+**What changed this session**
+
+1. **Both estimator arms run simultaneously** off one sensor stream — `eskf_node` →
+   `/eskf/odom` (fixed `R_leg`) and `eskf_slip_node` → `/eskf_slip/odom`
+   (`use_slip_model:=true`). The slip model is now an A/B *inside* one run, which is the
+   only version of that comparison worth anything here. `eskf.launch.py slip:=true`;
+   `run_go2_teleop.sh` does it by default (`--no-slip` reverts); `plot_trajectory.py`
+   draws three curves; `REPORT.md` scores both arms. (`deeaef0`)
+2. **First dual-arm terrain square ran and completed all four corners** — baseline 2.591 m
+   / 2.6° yaw, slip-adaptive 6.121 m / 13.6°. (`9edfac6`)
+3. **That result was then cut down to size.** `scripts/slip_yaw_experiment.py` (offline,
+   40 seeds) shows inflating `R_leg` lowers the *probability* of recovering from a heading
+   kick (16/40 → 10/40) but leaves the final error a **coin flip** (worse in ~19/40). The
+   earlier "inflating R_leg costs yaw stability" was **retracted**. (`b972133`)
+4. **`slip_score` is now recorded** (`/eskf_slip/slip` → CSV column + a `REPORT.md` line
+   with the implied `R_leg` inflation). (`9edfac6`)
+5. **The estimator is fully derived in `src/go2_eskf/README.md`** — physics, `F`/`H`
+   Jacobians with the leg-odom `H` worked out, `Q`/`R`, Joseph update, flow chart, each
+   equation carrying a `file:line`. `DESIGN.md` §2's stale `Q` (per-sample convention)
+   fixed at the same time. (`df74c58`)
+
+**Next steps, in order**
+
+1. **Run `--terrain --square` again and read the slip-score line in `REPORT.md` first.**
+   A narrow score range = the model de-weights leg odometry everywhere rather than
+   detecting slip. That one line decides whether the model or the `R`↔yaw coupling is at
+   fault. **It has never been captured live** — the metric postdates the only dual-arm run.
+2. Get the dual-arm comparison to ~5 runs per arm. n=1 today; §0 variance rules apply.
+3. `--adapt` and `--stiff` (the two slope fixes) are still **unvalidated in sim**. A/B one
+   at a time, never together.
+
+**Do not re-derive**: leg odometry's `H` has a nonzero ψ column proportional to speed, so
+it *does* pull on heading — only `δv = δψ·(-v_y, v_x)` is blind, and at rest there is no
+heading information at all. Full derivation in `src/go2_eskf/README.md` §4.
+
+---
+
+**PREVIOUS (2026-07-28 — CHAMP leg odometry re-derived as a least-squares body twist; two
 defects found and fixed OFFLINE with zero run-to-run variance. Plus the observability
-result that explains why six runs of filter tuning did nothing. Resume here.)**
+result that explains why six runs of filter tuning did nothing.)**
 
 Triggered by another square screenshot (final **2.735 m**, max 2.786 m). The error ramps on
 the STRAIGHT legs and plateaus through the corners, and the estimated square is rotated and
