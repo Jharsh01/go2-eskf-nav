@@ -20,6 +20,14 @@
 #include <std_msgs/msg/float64.hpp>
 #include <tf2_ros/transform_broadcaster.h>
 
+// champ_msgs lives in the vendored CHAMP stack. It carries the only live
+// foot-contact signal (/foot_contacts), which is a slip feature, but a
+// first-party package must still build without the vendored tree present — so
+// the dependency is optional and CMake defines this only when it is found.
+#ifdef GO2_ESKF_HAS_CHAMP_MSGS
+#include <champ_msgs/msg/contacts_stamped.hpp>
+#endif
+
 #include "go2_eskf/eskf_core.hpp"
 #include "go2_eskf/slip_model.hpp"
 
@@ -36,10 +44,25 @@ class EskfNode : public rclcpp::Node {
   void groundTruthCallback(const nav_msgs::msg::Odometry::SharedPtr msg);
   void cmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg);
   void jointStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg);
+#ifdef GO2_ESKF_HAS_CHAMP_MSGS
+  void contactsCallback(const champ_msgs::msg::ContactsStamped::SharedPtr msg);
+#endif
 
   // Phase 3: run the slip model on the latest features and return the
   // (possibly inflated) leg-odometry covariance for this correction.
   Eigen::Matrix2d legCovarianceForUpdate(double leg_vx, double leg_vy);
+
+  // The feature vector the slip model consumes, built from the latest sensor
+  // callbacks. Split out so training data is logged from EXACTLY the same code
+  // path that inference uses — a training set built any other way silently
+  // drifts from what the live model sees.
+  SlipFeatures currentSlipFeatures(double leg_vx, double leg_vy) const;
+
+  // One CSV row per fused leg-odom update: the features, plus the ground-truth
+  // body twist when a truth topic is connected. train_slip_model.py turns the
+  // (leg odom - truth) velocity error into the training label, so this is the
+  // whole supervision signal for the slip model.
+  void logSlipFeatures(const rclcpp::Time& stamp, const SlipFeatures& feat);
 
   // Distinguishes a genuine stop from champ's mid-gait "no information" leg-odom
   // sample. Both look like (0,0,0), but they differ in DURATION: a flight phase
@@ -75,9 +98,12 @@ class EskfNode : public rclcpp::Node {
   bool gps_datum_set_ = false;
   double lat0_ = 0.0, lon0_ = 0.0;
 
-  // Latest ground truth (for logging only).
+  // Latest ground truth (for logging only). The twist is what labels the slip
+  // training set: the gz OdometryPublisher reports it in the CHILD (body) frame,
+  // the same frame as CHAMP's leg odometry, so the two subtract directly.
   bool have_gt_ = false;
   double gt_x_ = 0.0, gt_y_ = 0.0, gt_yaw_ = 0.0;
+  double gt_vx_ = 0.0, gt_vy_ = 0.0, gt_wz_ = 0.0;
 
   // Parameters.
   std::string world_frame_, base_frame_;
@@ -141,11 +167,21 @@ class EskfNode : public rclcpp::Node {
   double gyro_wz_ = 0.0;                                // measured yaw rate
   double joint_vel_mean_ = 0.0, joint_vel_max_ = 0.0;   // joint velocity stats
   double accel_horiz_ = 0.0;                            // horizontal motion accel
-  // NOT WIRED UP: nothing assigns this, so the slip model's contact_frac feature
-  // is a frozen 1.0. Populating it needs a /foot_contacts
-  // (champ_msgs/ContactsStamped) subscription, i.e. a first-party -> vendored
-  // dependency, for a model that is off by default. Do not read it as live data.
+  // Fraction of feet in stance, from /foot_contacts (champ_msgs/ContactsStamped).
+  // Only live when the vendored champ_msgs was found at build time AND the topic
+  // is publishing; otherwise it stays at the neutral 1.0 and have_contacts_ is
+  // false, which the feature logger records so a training set can never mistake
+  // the placeholder for data.
+  //
+  // MEASURED 2026-08-11, once it was wired up: at the instants the slip model
+  // actually runs it is 0.5 in 13467/13467 samples, i.e. it carries ZERO
+  // information. That is structural, not a bug — the degenerate gate drops every
+  // sample with 0 or 4 feet down (champ returns hard zeros there), and a trot in
+  // between always stands on one diagonal pair. Wiring it up was still worth it:
+  // the feature is now known-dead rather than assumed-useful. A useful contact
+  // feature would have to be sub-gait-cycle (e.g. stance duty over a window).
   double contact_frac_ = 1.0;                           // feet-in-contact fraction
+  bool have_contacts_ = false;
 
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr leg_odom_sub_;
@@ -153,6 +189,9 @@ class EskfNode : public rclcpp::Node {
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr gt_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
+#ifdef GO2_ESKF_HAS_CHAMP_MSGS
+  rclcpp::Subscription<champ_msgs::msg::ContactsStamped>::SharedPtr contacts_sub_;
+#endif
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr slip_pub_;
   // b_g is the state that corrupts heading (predict integrates gyro_z - b_g), so
@@ -161,6 +200,7 @@ class EskfNode : public rclcpp::Node {
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 
   std::ofstream log_file_;
+  std::ofstream slip_log_file_;
 };
 
 }  // namespace go2_eskf

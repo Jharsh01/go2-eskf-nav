@@ -54,7 +54,16 @@ colcon test --packages-select ekf_estimator
 # This is the strongest regression test for the ESKF math — run it after any
 # change to eskf_core.cpp or eskf_reference.py.
 python3 src/go2_eskf/scripts/cross_validate.py
+
+# Same discipline for the slip MLP (C++ Eigen forward pass vs the NumPy twin).
+# Run it after retraining — it also proves the new weights file parses in C++.
+python3 src/go2_eskf/scripts/cross_validate_slip.py
 ```
+
+**Never build while a sim run is in flight.** `colcon build` and Gazebo together
+OOM-killed the compiler and starved the sim mid-gait; CHAMP fell 19 s into the
+square and the "drift" logged past that point was 9964 m of scrabbling-feet
+nonsense. Wait for the run to finish.
 
 GTest binaries live at `build/<pkg>/<target>` (e.g. `build/motion_planner/test_planners`)
 and accept `--gtest_filter=...` to run a single case.
@@ -179,6 +188,23 @@ with a slip-adaptive measurement-covariance model. Replaces CHAMP's stock
 - `scripts/eskf_reference.py` — line-for-line NumPy twin; `cross_validate.py` compares it
   to the C++ core. `tools/replay_eskf.cpp` is the deterministic replay driver.
 - Tests: `test_eskf_core` (16 GTest cases)
+- **Slip model (Phase 3): trained on REAL run data, end to end.** `eskf_node` taps a
+  training set at exactly the point inference runs — `slip_log:=<csv>` writes one row per
+  *fused* leg-odom update (post-scale, post-gate, ZUPT rows excluded) with the eight
+  features plus the ground-truth body twist. `run_go2_teleop.sh` sets it to
+  `run_report/slip_features.csv` whenever the ground-truth bridge is up (`--plot`/`--square`).
+  Then `train_slip_model.py --runlog <csv>...` labels each row
+  `clip(|v_leg − v_truth| / 0.3, 0, 1)` — how wrong leg odometry actually was, which is the
+  quantity `R_leg` exists to describe — trains the MLP, and writes `config/slip_model.txt`
+  with a provenance header. Ground truth is used for the LABEL only, never fed to the filter.
+  `config/slip_model_synthetic.txt` keeps the old never-saw-the-robot weights for A/B.
+  Always train on one run and evaluate on others; the rows are a time series.
+- **`contact_frac` is a structurally dead feature — measured, not assumed.** It is now
+  wired to `/foot_contacts` (optional `champ_msgs` dependency, `find_package(... QUIET)`,
+  so the package still builds without the vendored tree). At the instants the slip model
+  runs it is **0.5 in 13467/13467 samples**: the degenerate gate drops every 0-and-4-feet
+  sample, and a trot in between always stands on exactly one diagonal pair. A useful contact
+  feature would have to be sub-gait-cycle (stance duty over a window), not instantaneous.
 - `launch/ground_truth.launch.py` — benchmark ground truth: the sim has no world-frame
   Odometry (its `/odom` is the robot_localization estimate; gz pose-vector topics lose entity
   names through `ros_gz_bridge`). A dedicated gz `OdometryPublisher` on the model (added to
@@ -273,7 +299,11 @@ must match `NavigationNode::buildDemoMap()`. The Go2 GPS origin lives in
 | `--terrain` | `go2_eskf/worlds/terrain.sdf` | uneven heightmap + low-friction patches |
 
 `terrain.sdf` is **generated** by `scripts/make_terrain_world.py` (a fractal heightmap plus
-four `mu=0.3` patches on the 10 m square). It exists because the flat world has a rigid
+four `mu=0.3` patches at the leg midpoints of the **10 m** square: (5,0), (10,-5), (5,-10),
+(0,-5)). **`square_test.py --side` now defaults to 5 m**, so the driven route is half that
+box and touches only two of the four patches, at its corners rather than mid-leg — halve
+`SQUARE`/`DEFAULT_PATCHES` in the generator and regenerate if the friction patches are the
+point of the run, or drive `-- --side 10`. It exists because the flat world has a rigid
 no-slip floor and so produces *no slip at all* — the slip model has nothing to detect there.
 Difficulty is set either by `--relief` (peak elevation) or, preferably, by **`--max-slope DEG`**,
 which caps the steepest cell anywhere and solves the required relief in closed form (slope is
@@ -300,6 +330,29 @@ regardless of how many runs happen. `run_report/` is gitignored.
 | `timeseries.csv` | 29-column merged series at 5 Hz, hard row cap (decimates itself on overflow) |
 | `context.txt` | launcher flags/world/gains (written by the shell) |
 | `node_logs/` | per-node stdout, copied by `cleanup()` **before** it deletes its scratch dir — otherwise this is lost |
+| `slip_features.csv` | slip-model training set (~2 MB), written when the ground-truth bridge is up. Feed to `train_slip_model.py --runlog` |
+| `outcome.txt` | how the run ENDED (`square test COMPLETE` / `FAILSAFE TIMEOUT after Ns`), written by the launcher just before teardown; `REPORT.md` reproduces it under **Outcome** |
+
+**Runs stop themselves.** `run_go2_teleop.sh` supervises two automatic exits: the square's
+drift summary appearing, and a `--timeout SEC` wall-clock cap — **300 s by default under
+`--square`**, sized for the 5 m route (~185 s end to end, ~90 s of it boot). A 10 m route
+(`-- --side 10`) takes ~370 s and **will be cut off** unless `--timeout` is raised;
+`--no-timeout` opts out. Both exits call the same `cleanup()` as Ctrl-C, so a timed-out run
+still copies `node_logs/` and lets `run_report.py` write its final report — a wedged run
+stays diagnosable rather than sitting on the GPU indefinitely.
+
+`REPORT.md`'s config table also carries a **Slip model** row mined from the ESKF node's own
+stdout (`loaded — <path>` / `**FAILED TO LOAD**` / `**NOT LOADED**`). Read it before
+interpreting any A/B: an empty or unparseable `slip_model_path` makes the slip arm fall back
+to the fixed `R_leg` *silently*, so the two arms become identical and the comparison is a
+null test that looks like a result.
+
+**The launcher's Ctrl-C handler cannot be triggered from a script.** `run_go2_teleop.sh`
+traps `INT`, but a command started asynchronously from a non-interactive shell has SIGINT
+set to IGNORE, and bash cannot trap a signal ignored on entry — so `kill -INT` on a
+backgrounded launcher does nothing, it gets SIGKILLed, `cleanup()` never runs, and the whole
+stack is orphaned with STALE `node_logs/` (which then get read as if they were this run's).
+Use `kill -TERM`, which the same trap catches.
 
 Implemented by `scripts/run_report.py` (passive subscriber, starts at t=0, rewrites the
 report every 20 s as well as at shutdown). The flush timer runs on **wall** time on

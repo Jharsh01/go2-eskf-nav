@@ -53,8 +53,15 @@ eskf_node:
     gyro_noise: 0.002                 # [rad/s]
     gyro_bias_noise: 0.0001           # [rad/s/sqrt(s)]
     # Fractional yaw-rate SCALE uncertainty — the real heading disturbance here.
-    # MEASURED: wz_gyro/wz_truth = 0.830 and 0.964 during wz=+0.4 turns, i.e. a
-    # 4-17% scale error, integrated open-loop into psi. Q(psi,psi) gets an extra
+    # RE-MEASURED 2026-08-12 over 6 runs / 146k samples: wz_gyro/wz_truth = 0.981
+    # (range 0.976-0.984, corr 0.92) — a 1.9% scale error, NOT the "0.830 and
+    # 0.964" this comment used to claim. That older figure came from regressing
+    # against UNFILTERED ground-truth yaw rate, which carries spikes to 583 rad/s
+    # (see skills.md §0); reject |gt_wz| > 1.5 before using it. 1.9% is only
+    # -0.43 deg/s at a wz=0.4 corner, so the scale error is NOT what drives the
+    # heading drift — the residual integrates as a random walk instead. This
+    # term is kept because it is still the honest way to grow heading uncertainty
+    # while turning, but do not expect it to fix drift. Q(psi,psi) gets an extra
     # (gyro_scale_noise*wz)^2 term so heading goes uncertain exactly while turning
     # and leg odometry's vy residual can correct it. 0 = white-noise only (the old
     # behaviour, which left position error tracking yaw error 1:1).
@@ -114,6 +121,15 @@ eskf_node:
     slip_lambda: 1.0                  # R_leg <- R_leg * (1 + lambda*slip)^2
     cmd_vel_topic: "cmd_vel"          # commanded body twist (slip feature)
     joint_states_topic: "joint_states"  # joint velocities (slip feature)
+    foot_contacts_topic: "foot_contacts"  # champ_msgs/ContactsStamped (slip feature).
+                                      # MEASURED dead: 0.5 in every sample the model
+                                      # actually sees — see eskf_node.hpp.
+    # Training-data tap. Non-empty -> one CSV row per FUSED leg-odom update with the
+    # eight slip features plus the ground-truth body twist (needs ground_truth_topic),
+    # which train_slip_model.py --runlog turns into labels. Independent of
+    # use_slip_model: the features are sensor-derived, so the baseline arm records
+    # while the slip arm runs whatever model is current. Costs ~2 MB per square run.
+    slip_log_path: ""
 
     # --- Initial covariance (diagonal)
     init_pos_cov: 1.0

@@ -15,12 +15,20 @@ so it unit-tests and cross-validates in isolation, wrapped by a thin ROS node.
 - **Phase 3 ✅** — slip-adaptive leg covariance: PyTorch trainer (+ NumPy
   fallback) → exported weights → dependency-free Eigen MLP (`slip_model.hpp`)
   inflating `R_leg`; 12 unit tests + C++≡NumPy slip cross-validation (~3e-16).
+  **Trained on real logged runs** (`slip_log_path` → `train_slip_model.py
+  --runlog`, labelled by the ground-truth body twist) and A/B'd live against a
+  fixed-`R_leg` arm running on the same sensor stream in the same run.
 - **Phase 4 ✅** — benchmark suite: ATE/RPE/drift metrics with SE(2) alignment,
   fixed-vs-adaptive-vs-GPS-denied scenarios, auto-generated report + plots.
 
-The remaining manual step is collecting real logs from a healthy walking-sim run
-to populate the benchmark report with on-robot numbers. See
-[`docs/DESIGN.md`](docs/DESIGN.md) §7–8.
+What the live A/B says so far (terrain squares, both arms per run): the model's
+dominant effect is **calibration** — the fixed `R_leg` std of 0.10 m/s was
+measurably too tight against a true leg-odom error of ~0.16 m/s — and it does
+**not** respond to the `mu=0.3` patches, because those patches raise the leg-odom
+error only ~10 %. Position error differences between the arms stay inside the
+run-to-run variance. See `skills.md` §0 for the numbers, the sample size, and the
+one-constant ablation that should be run before claiming the network earns its
+place.
 
 ---
 

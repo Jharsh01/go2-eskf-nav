@@ -45,8 +45,14 @@ import xml.dom.minidom
 import numpy as np
 from PIL import Image
 
-# The 10 m square that square_test.py drives: (0,0) -> (10,0) -> (10,-10) ->
+# The 10 m square this world is laid out for: (0,0) -> (10,0) -> (10,-10) ->
 # (0,-10) -> (0,0). Patches default to the midpoint of each leg.
+#
+# NOTE: square_test.py's --side now defaults to 5 m, so the driven route is HALF
+# this box and crosses only the (5,0) and (0,-5) patches — at its corners, not
+# mid-leg. Halve both tuples here (and regenerate) to put the friction patches
+# back under the middle of each leg; the slope report the script prints is
+# computed along SQUARE, so it must match the route to mean anything.
 SQUARE = ((0.0, 0.0), (10.0, 0.0), (10.0, -10.0), (0.0, -10.0))
 DEFAULT_PATCHES = ((5.0, 0.0), (10.0, -5.0), (5.0, -10.0), (0.0, -5.0))
 

@@ -67,7 +67,7 @@ ros2 run go2_eskf go2_eskf_node --ros-args -p use_sim_time:=true -p use_gps:=fal
 | Topic (default) | Param | Type | Notes |
 |-----------------|-------|------|-------|
 | `eskf/odom` | `output_odom_topic` | `nav_msgs/Odometry` | Pose in `world_frame`, twist in body frame; `pose.covariance` carries x/y/yaw variances, `twist.covariance` carries vx/vy. Published every IMU tick. |
-| `eskf/slip` | — | `std_msgs/Float64` | Latest slip score in [0,1] — only if `use_slip_model:=true`. Published each leg-odom correction. |
+| `eskf/slip_score` | — | `std_msgs/Float64` | Latest slip score in [0,1] — only if `use_slip_model:=true`. Published each leg-odom correction. |
 | TF `world_frame → base_frame` | — | `tf2` | Broadcast only if `publish_tf:=true` (off by default to avoid clashing with the stock `robot_localization` TF tree). |
 
 ### 2.3 Frames
@@ -149,7 +149,7 @@ odometry dominates velocity; `gravity_lp` attitude to survive the sim IMU).
 ### Slip model (Phase 3)
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `use_slip_model` | `false` | Enable slip-adaptive leg covariance (subscribes `cmd_vel` + `joint_states`, publishes `eskf/slip`) |
+| `use_slip_model` | `false` | Enable slip-adaptive leg covariance (subscribes `cmd_vel` + `joint_states`, publishes `eskf/slip_score`) |
 | `slip_model_path` | `""` | Path to the exported weights (e.g. `config/slip_model.txt`); if empty/unloadable, falls back to fixed `R_leg` |
 | `slip_lambda` | `1.0` | Inflation gain: `R_leg ← R_leg · (1 + λ·s)²` |
 | `cmd_vel_topic` | `cmd_vel` | Commanded body twist (slip feature) |

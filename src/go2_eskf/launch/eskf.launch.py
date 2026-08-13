@@ -40,6 +40,20 @@ def generate_launch_description():
         "slip_odom_topic", default_value="eskf_slip/odom",
         description="Output odometry topic of the slip-adaptive arm.",
     )
+    declare_gt_topic = DeclareLaunchArgument(
+        "ground_truth_topic", default_value="",
+        description="nav_msgs/Odometry ground truth (e.g. /ground_truth/odom "
+                    "from ground_truth.launch.py). Needed to LABEL a slip "
+                    "training set — without it slip_log rows have no label.",
+    )
+    declare_slip_log = DeclareLaunchArgument(
+        "slip_log", default_value="",
+        description="CSV path for slip-model training data: one row of the "
+                    "eight slip features per fused leg-odom update, plus the "
+                    "ground-truth body twist. Written by the BASELINE arm (the "
+                    "features are sensor-derived, so both arms see the same "
+                    "ones). Feed it to scripts/train_slip_model.py --runlog.",
+    )
     declare_use_gps = DeclareLaunchArgument(
         "use_gps", default_value="false",
         description="Fuse /gps/fix for absolute position. OFF by default: the "
@@ -59,6 +73,8 @@ def generate_launch_description():
             LaunchConfiguration("params_file"),
             {"use_sim_time": LaunchConfiguration("use_sim_time")},
             {"log_path": LaunchConfiguration("log_path")},
+            {"ground_truth_topic": LaunchConfiguration("ground_truth_topic")},
+            {"slip_log_path": LaunchConfiguration("slip_log")},
             # Typed override so use_gps:=true/false on the CLI actually reaches
             # the bool parameter (a raw substitution would arrive as a string).
             {"use_gps": ParameterValue(
@@ -68,7 +84,7 @@ def generate_launch_description():
 
     # Second arm: identical inputs and tuning, slip-adaptive R_leg. Distinct node
     # name and output topic so the two run side by side; the diagnostic topics
-    # (eskf/slip, eskf/gyro_bias) are remapped too, otherwise both arms would
+    # (eskf/slip_score, eskf/gyro_bias) are remapped too, otherwise both arms would
     # publish onto the same names. TF stays off on this one regardless (the
     # baseline arm owns map->base_link if publish_tf is enabled at all).
     slip_node = Node(
@@ -82,19 +98,21 @@ def generate_launch_description():
             {"use_sim_time": LaunchConfiguration("use_sim_time")},
             {"use_gps": ParameterValue(
                 LaunchConfiguration("use_gps"), value_type=bool)},
+            {"ground_truth_topic": LaunchConfiguration("ground_truth_topic")},
             {"use_slip_model": True},
             {"publish_tf": False},
             {"slip_model_path": LaunchConfiguration("slip_model_path")},
             {"output_odom_topic": LaunchConfiguration("slip_odom_topic")},
         ],
         remappings=[
-            ("eskf/slip", "eskf_slip/slip"),
+            ("eskf/slip_score", "eskf_slip/slip_score"),
             ("eskf/gyro_bias", "eskf_slip/gyro_bias"),
         ],
     )
 
     return LaunchDescription(
         [declare_params, declare_use_sim_time, declare_log_path,
+         declare_gt_topic, declare_slip_log,
          declare_use_gps, declare_slip, declare_slip_model_path,
          declare_slip_odom_topic, eskf_node, slip_node]
     )

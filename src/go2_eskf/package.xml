@@ -24,6 +24,11 @@
   <!-- Ground-truth bridge for the Phase-4 benchmark (ground_truth.launch.py) -->
   <exec_depend>ros_gz_bridge</exec_depend>
 
+  <!-- /foot_contacts, a slip-model feature. OPTIONAL: find_package(... QUIET) in
+       CMakeLists, so the package still builds without the vendored CHAMP tree.
+       Declared so colcon orders champ_msgs before go2_eskf when it IS present. -->
+  <depend>champ_msgs</depend>
+
   <test_depend>ament_cmake_gtest</test_depend>
 
   <export>

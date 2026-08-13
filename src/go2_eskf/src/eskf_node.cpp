@@ -98,6 +98,13 @@ EskfNode::EskfNode() : rclcpp::Node("eskf_node") {
   const auto slip_model_path = declare_parameter<std::string>("slip_model_path", "");
   const auto cmd_vel_topic = declare_parameter<std::string>("cmd_vel_topic", "cmd_vel");
   const auto joint_topic = declare_parameter<std::string>("joint_states_topic", "joint_states");
+  const auto contacts_topic =
+      declare_parameter<std::string>("foot_contacts_topic", "foot_contacts");
+  // Training-data tap: one CSV row of slip features per fused leg-odom update.
+  // Independent of use_slip_model_ — the features are all sensor-derived, so the
+  // BASELINE arm can record a training set while the slip arm is still running
+  // whatever model exists today.
+  const auto slip_log_path = declare_parameter<std::string>("slip_log_path", "");
   if (use_slip_model_) {
     if (slip_model_path.empty()) {
       RCLCPP_WARN(get_logger(),
@@ -140,11 +147,31 @@ EskfNode::EskfNode() : rclcpp::Node("eskf_node") {
   cmd_vel_sub_ = create_subscription<geometry_msgs::msg::Twist>(
       cmd_vel_topic, 10,
       std::bind(&EskfNode::cmdVelCallback, this, std::placeholders::_1));
-  if (use_slip_model_) {
+  // The slip features are needed for inference AND for recording a training set,
+  // so subscribe whenever either is on.
+  const bool need_slip_features = use_slip_model_ || !slip_log_path.empty();
+  if (need_slip_features) {
     joint_state_sub_ = create_subscription<sensor_msgs::msg::JointState>(
         joint_topic, rclcpp::SensorDataQoS(),
         std::bind(&EskfNode::jointStateCallback, this, std::placeholders::_1));
-    slip_pub_ = create_publisher<std_msgs::msg::Float64>("eskf/slip", 10);
+#ifdef GO2_ESKF_HAS_CHAMP_MSGS
+    contacts_sub_ = create_subscription<champ_msgs::msg::ContactsStamped>(
+        contacts_topic, rclcpp::SensorDataQoS(),
+        std::bind(&EskfNode::contactsCallback, this, std::placeholders::_1));
+#else
+    RCLCPP_WARN(get_logger(),
+                "built without champ_msgs: /%s is not subscribed, so the slip "
+                "model's contact_frac feature stays at 1.0.",
+                contacts_topic.c_str());
+#endif
+  }
+  if (use_slip_model_) {
+    // "slip_score", not "slip": this is a Float64 diagnostic in [0,1], NOT the
+    // slip arm's odometry. The old name sat one character away from the slip
+    // ARM's namespace (/eskf_slip/odom) and was repeatedly read as if it were
+    // the second trajectory. It is not — plot_trajectory.py's third curve comes
+    // from /eskf_slip/odom; this topic only feeds REPORT.md's slip-score line.
+    slip_pub_ = create_publisher<std_msgs::msg::Float64>("eskf/slip_score", 10);
   }
   odom_pub_ = create_publisher<nav_msgs::msg::Odometry>(out_topic, 10);
   gyro_bias_pub_ = create_publisher<std_msgs::msg::Float64>("eskf/gyro_bias", 10);
@@ -158,6 +185,23 @@ EskfNode::EskfNode() : rclcpp::Node("eskf_node") {
                  "gt_x,gt_y,gt_yaw\n";
     RCLCPP_INFO(get_logger(), "Logging estimate vs ground truth to %s",
                 log_path.c_str());
+  }
+
+  if (!slip_log_path.empty()) {
+    slip_log_file_.open(slip_log_path);
+    // Feature columns first, in slip_feat:: order, so the file is readable by
+    // scripts/slip_reference.py's SLIP_FEATURES directly; then the raw inputs and
+    // the ground-truth twist that the trainer needs to build the label.
+    slip_log_file_ << "t,cmd_minus_leg_vx,cmd_minus_leg_vy,cmd_minus_gyro_wz,"
+                      "leg_speed,joint_vel_mean,joint_vel_max,accel_horiz,"
+                      "contact_frac,leg_vx,leg_vy,gyro_wz,cmd_vx,cmd_vy,cmd_wz,"
+                      "have_contacts,gt_vx,gt_vy,gt_wz\n";
+    RCLCPP_INFO(get_logger(),
+                "Logging slip features%s to %s",
+                gt_topic.empty()
+                    ? " (NO ground_truth_topic set — rows will have no label)"
+                    : "",
+                slip_log_path.c_str());
   }
 
   RCLCPP_INFO(get_logger(),
@@ -282,6 +326,12 @@ void EskfNode::legOdomCallback(const nav_msgs::msg::Odometry::SharedPtr msg) {
     const double vx = msg->twist.twist.linear.x * leg_odom_scale_;
     const double vy = msg->twist.twist.linear.y * leg_odom_scale_;
     const Eigen::Vector2d v_body(vx, vy);
+    // Record training data at exactly the point where R_leg is chosen, so the
+    // logged distribution is the inference distribution: post-scale, post-gate,
+    // ZUPT samples excluded (those use R_zupt_, not the slip model).
+    if (slip_log_file_.is_open() && !zupt) {
+      logSlipFeatures(stamp, currentSlipFeatures(vx, vy));
+    }
     const Eigen::Matrix2d R = zupt ? R_zupt_ : legCovarianceForUpdate(vx, vy);
     eskf_->correctLegOdom(v_body, R);
     // Leg yaw rate is bias-free, so (gyro - leg) observes the gyro bias directly —
@@ -362,9 +412,19 @@ void EskfNode::jointStateCallback(
   joint_vel_max_ = mx;
 }
 
-Eigen::Matrix2d EskfNode::legCovarianceForUpdate(double leg_vx, double leg_vy) {
-  if (!use_slip_model_ || !slip_model_.loaded()) return R_leg_;
+#ifdef GO2_ESKF_HAS_CHAMP_MSGS
+void EskfNode::contactsCallback(
+    const champ_msgs::msg::ContactsStamped::SharedPtr msg) {
+  if (msg->contacts.empty()) return;
+  size_t n = 0;
+  for (bool c : msg->contacts) n += c ? 1u : 0u;
+  contact_frac_ = static_cast<double>(n) /
+                  static_cast<double>(msg->contacts.size());
+  have_contacts_ = true;
+}
+#endif
 
+SlipFeatures EskfNode::currentSlipFeatures(double leg_vx, double leg_vy) const {
   SlipFeatures feat;
   feat.cmd_vx = cmd_vx_;
   feat.cmd_vy = cmd_vy_;
@@ -376,6 +436,31 @@ Eigen::Matrix2d EskfNode::legCovarianceForUpdate(double leg_vx, double leg_vy) {
   feat.joint_vel_max = joint_vel_max_;
   feat.accel_horiz = accel_horiz_;
   feat.contact_frac = contact_frac_;
+  return feat;
+}
+
+void EskfNode::logSlipFeatures(const rclcpp::Time& stamp,
+                               const SlipFeatures& feat) {
+  if (!slip_log_file_.is_open()) return;
+  const Eigen::VectorXd f = feat.toVector();
+  slip_log_file_ << stamp.seconds();
+  for (int i = 0; i < f.size(); ++i) slip_log_file_ << ',' << f(i);
+  slip_log_file_ << ',' << feat.leg_vx << ',' << feat.leg_vy << ','
+                 << feat.gyro_wz << ',' << feat.cmd_vx << ',' << feat.cmd_vy
+                 << ',' << feat.cmd_wz << ',' << (have_contacts_ ? 1 : 0)
+                 << ',';
+  // No truth => no label. Write NaN rather than a zero the trainer could mistake
+  // for "leg odometry was perfect here".
+  if (have_gt_)
+    slip_log_file_ << gt_vx_ << ',' << gt_vy_ << ',' << gt_wz_ << '\n';
+  else
+    slip_log_file_ << "nan,nan,nan\n";
+}
+
+Eigen::Matrix2d EskfNode::legCovarianceForUpdate(double leg_vx, double leg_vy) {
+  if (!use_slip_model_ || !slip_model_.loaded()) return R_leg_;
+
+  const SlipFeatures feat = currentSlipFeatures(leg_vx, leg_vy);
 
   try {
     last_slip_ = slip_model_.predict(feat);
@@ -427,6 +512,12 @@ void EskfNode::groundTruthCallback(const nav_msgs::msg::Odometry::SharedPtr msg)
   tf2::fromMsg(msg->pose.pose.orientation, q);
   double r, p;
   tf2::Matrix3x3(q).getRPY(r, p, gt_yaw_);
+  // Body-frame twist (nav_msgs/Odometry convention, and what gz's
+  // OdometryPublisher emits) — directly comparable to CHAMP's leg-odom twist,
+  // which is what makes it usable as the slip label.
+  gt_vx_ = msg->twist.twist.linear.x;
+  gt_vy_ = msg->twist.twist.linear.y;
+  gt_wz_ = msg->twist.twist.angular.z;
   have_gt_ = true;
 }
 

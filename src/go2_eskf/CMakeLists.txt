@@ -20,6 +20,11 @@ find_package(std_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
+# OPTIONAL: the vendored CHAMP stack's message package. It carries /foot_contacts,
+# the only live foot-contact signal and one of the slip model's eight features.
+# Optional on purpose — go2_eskf must still build (and its tests still run) in a
+# workspace without the vendored tree.
+find_package(champ_msgs QUIET)
 
 # ---- Library: pure ESKF math, ROS-free, used by node, tools and tests
 add_library(${PROJECT_NAME}_core src/eskf_core.cpp)
@@ -35,6 +40,13 @@ target_link_libraries(${PROJECT_NAME}_node ${PROJECT_NAME}_core)
 ament_target_dependencies(${PROJECT_NAME}_node
   rclcpp sensor_msgs nav_msgs geometry_msgs std_msgs
   tf2 tf2_ros tf2_geometry_msgs)
+if(champ_msgs_FOUND)
+  ament_target_dependencies(${PROJECT_NAME}_node champ_msgs)
+  target_compile_definitions(${PROJECT_NAME}_node PRIVATE GO2_ESKF_HAS_CHAMP_MSGS)
+else()
+  message(STATUS "go2_eskf: champ_msgs not found — /foot_contacts is not "
+                 "subscribed and the slip model's contact_frac feature stays 1.0")
+endif()
 
 # ---- Deterministic replay driver for cross-validation vs. the NumPy twin
 add_executable(replay_eskf tools/replay_eskf.cpp)

@@ -4,10 +4,12 @@ Working log of the go2_eskf ↔ Unitree Go2 sim integration debugging. Read this
 first when resuming — it captures hard-won findings that aren't obvious from the
 code. (Companion to `CLAUDE.md`; this file is the narrative + current state.)
 
-Last updated: 2026-07-28 — see §0 "resume here". Current headline: the sensor-level yaw
-defect was FOUND AND FIXED analytically (CHAMP's leg odometry mis-derived the body twist);
-and yaw is provably UNOBSERVABLE in the ESKF with GPS off, so no filter tuning could ever
-have fixed the heading drift. Live A/B still pending.
+Last updated: 2026-08-12 — see §0 "resume here". Current headline: the slip model is trained
+on real logged runs and A/B'd within single terrain squares. It mostly *calibrates* `R_leg`
+(the fixed value was 2.6x too small in variance) and does NOT respond to the µ=0.3 patches —
+because those patches raise the leg-odom error by only ~10%, so there is little slip to
+detect. Earlier headlines still stand: CHAMP's leg odometry mis-derived the body twist
+(found and fixed analytically), and yaw is provably UNOBSERVABLE with GPS off.
 
 ---
 
@@ -15,7 +17,259 @@ have fixed the heading drift. Live A/B still pending.
 
 ---
 
-### ⏱ SESSION HANDOFF — 2026-08-11 (RESUME HERE)
+### ⏱ SESSION HANDOFF — 2026-08-12 (RESUME HERE)
+
+Branch `fix/sim-readiness-guard-and-drift-baseline`. **The slip model is now trained on real
+robot data and A/B'd on terrain across multiple same-run comparisons.** Headline: it makes
+`R_leg` honest, it does NOT detect the low-friction patches — and the measurement below says
+that is the *right* answer, because those patches barely produce any extra leg-odom error.
+
+**HEADLINE 0 — is `R` the right place for the slip model? Measured 2026-08-12: mostly NO**
+
+Asked after a `--square --terrain --adapt` run reported the slip arm as far worse (raw ATE mean
+0.477 → 2.221 m). Two separate answers came out of it.
+
+*First, that run was NOT a slip loss.* `REPORT.md`'s "position error (ATE mean)" is the RAW
+mean error, which a constant heading offset dominates. Recomputed with `scripts/metrics.py`
+on the same `timeseries.csv`, both arms:
+
+| | ATE (SE2-aligned) | ATE raw | RPE trans / 2 s | RPE rot / 2 s | final drift |
+|---|---|---|---|---|---|
+| baseline | **0.362 m** | 0.568 m | 0.155 m | 4.50° | 1.211 m |
+| slip | **0.405 m** | 2.509 m | 0.148 m | 4.51° | 1.250 m |
+
+Identical trajectory SHAPE and identical LOCAL rotation error; the entire 4.6× raw gap is one
+low-frequency heading offset (yaw error mean 5.8° vs 21.5°). Consistent with the known
+mechanism — inflating `R` removes what little heading pull the leg-odom update has
+(`slip_yaw_experiment.py`, 16/40 → 10/40). **`REPORT.md`'s ATE column is raw; do not read it as
+ATE.** Fixing that column is on the list.
+
+*Second, and more useful — the diagnostics on `slip_features.csv` (5512 usable rows,
+`|gt_wz|<1.5` filtered) say `R` is conceptually admissible but a weak and mis-shaped lever:*
+
+1. **The error IS zero-mean, so `R` is not the wrong object.** Bias accounts for 0.8 % (vx) /
+   1.8 % (vy) of the error energy. There is no systematic offset for an `h`-side correction to
+   remove. Score one for the current design.
+2. **But 86 % of the model's output is a constant.** Inflation factor `1+s`: mean 1.603,
+   std/mean **13.6 %**. Fixed σ=0.10 gives a normalised innovation variance of **4.17** where a
+   2-D update wants 2.0; the optimal *constant* σ is **0.144**, and the model's mean lands 0.160.
+   It is a calibration wearing an MLP.
+3. **There is heteroscedasticity to exploit, and the features can't see it.** |e| spans
+   p10 0.057 → p90 0.291 (**5.1×**), but held-out R² for |e| is **0.182** with all 8 features and
+   **0.063** without the three `cmd_minus_*` ones. Strip the command and the gait features
+   explain ~6 % of the spread. That is the honest ceiling of this feature set.
+4. **What the model actually learned is "`cmd_vel` beats leg odometry".** Signed-error held-out
+   R² is 0.530 (ex) / 0.412 (ey) with `cmd_*`, and **0.010 / −0.008** without. Directly:
+   RMSE against ground-truth body velocity is leg odom 0.124 / 0.163 vs `cmd_vel` **0.110 / 0.117**
+   — and `cmd_vy` is identically zero. Beware: in sim the command tracks truth; on a real robot
+   slip is precisely what decorrelates them, so this signal does not transfer.
+5. **`R` is isotropic and shouldn't be.** σx 0.123, σy **0.161**, corr −0.09. Worse, the lateral
+   channel carries no information at all: least-squares `leg_vy/gt_vy` = **0.089**, corr +0.081,
+   while `leg_vy` std (0.123) exceeds truth's (0.114). CHAMP's `vy` is noise, fused at σ=0.10.
+6. **The gain is saturated, so `R` barely moves the velocity update.** With `accel_noise: 5.0`,
+   `P_vv ≈ 0.5` between leg-odom updates, so `K` goes 0.980 → 0.926 across the model's ENTIRE
+   range. The residual effect lands on the covariance/heading coupling — i.e. the one place it
+   hurts.
+7. **Structural: with GPS off there is nowhere for the trust to go.** Adaptive `R` pays when a
+   competing information source can take over. Here leg odometry is the only velocity anchor and
+   the IMU is deliberately gutted (`accel_noise: 5.0`, `gravity_lp`), so de-weighting it means
+   free-running integration, not "lean on the other sensor".
+
+**Ranked consequences (none implemented yet):** (a) make `R_leg` anisotropic — σx 0.123,
+σy 0.161 — and consider treating `vy` as near-uninformative; free, no model needed. (b) An online
+NIS/covariance-matching estimator would deliver the calibration in point 2 without any MLP, which
+is ~86 % of what the model currently delivers. (c) If the learned model stays, train it with a
+Gaussian NLL on a per-axis log-variance head instead of regressing `clip(|e|/0.3,0,1)` through a
+sigmoid — that label discards sign AND axis AND saturates (p90 |e| = 0.291 vs the 0.3 clip).
+(d) Harsher `--patch-mu` is still the experiment that would create slip worth detecting.
+
+**HEADLINE 1 — the fixed `R_leg` was simply wrong, and that is most of what the model fixes**
+
+Measured on terrain from 13.5 k live samples (`slip_features.csv`, labelled against
+ground-truth body twist):
+
+| quantity | value |
+|---|---|
+| leg-odom velocity error \|v_leg − v_truth\| | median **0.162**, p90 0.342 m/s |
+| least-squares scale `v_leg / v_truth` | **0.95** — so the error is RANDOM, not a scale bias |
+| `leg_odom_vel_noise` (the fixed `R_leg` std) | 0.10 m/s |
+
+The fixed `R_leg` was **~2.6× too small in variance**. The trained model's mean score 0.68
+inflates the std to `0.10·(1+0.68) = 0.168` — i.e. almost exactly the measured residual. So
+its first-order effect is a *calibration* it learned from data, not slip detection. Note
+`leg_odom_scale: 1.111` is vindicated on terrain: the scale comes out at 0.95, not 0.82.
+
+**HEADLINE 2 — the model does not respond to the µ=0.3 patches, and it shouldn't**
+
+Slip score inside vs outside the four `mu=0.3` patches, three runs: 0.714/0.659,
+0.682/0.687, 0.686/0.680 — **flat**. Before blaming the model, the ground truth was checked:
+the leg-odom error itself is only ~10 % higher on the patches (median 0.204 vs 0.180 m/s,
+consistent across all three runs). **The patches barely break the stance-foot assumption at
+this gait**, so there is almost no friction signal to detect and the error is dominated by
+gait/roughness noise everywhere. Do not read "the model failed to detect slip" from this —
+read "this world does not produce much slip". Making the patches harsher (lower `--patch-mu`)
+is the experiment that would actually test detection.
+
+**FINAL BENCHMARK — proper ATE/RPE, 7 paired runs, 297 m of ground truth**
+
+Computed with the package's own `scripts/metrics.py` (ATE = position RMSE after a rigid
+SE(2)/Umeyama alignment; RPE over a 2 s gap) on every valid run's `timeseries.csv`, both arms:
+
+| metric | baseline (fixed R) | slip-adaptive | slip better in |
+|---|---|---|---|
+| **ATE** (SE(2)-aligned RMSE) | median **2.066 m** (0.54–4.36) | median **1.246 m** (0.27–2.52) | **6/7** |
+| RPE translation / 2 s | 0.130 m (0.10–0.21) | 0.119 m (0.11–0.19) | 4/7 |
+| RPE rotation / 2 s | **2.10°** (1.4–8.3) | 3.34° (2.3–3.8) | 2/7 (baseline better) |
+| final drift, aligned | 6.85 % of path | 4.97 % of path | 5/7 |
+
+**Read the alignment carefully before quoting any of this.** ATE and the drift % are computed
+AFTER an SE(2) alignment, which absorbs a constant heading offset — so they measure trajectory
+SHAPE. On shape the slip arm wins consistently (6/7, −40% median). On RAW, unaligned final
+error it is still a coin flip (5/8 including the run below), because that metric is dominated
+by the unobservable heading. Both statements are true; they measure different things, and
+"ATE improved 40%" is only honest alongside "absolute drift did not".
+
+Caveat on n: one 5 m run (baseline 2.202 m / slip 4.317 m final — a slip LOSS) was overwritten
+before it was archived, so it is in the table above's 5/8 but not the 7-run metrics. Excluding
+it flatters the slip arm slightly.
+
+RPE rotation is the one metric where the baseline clearly wins (2.10 vs 3.34 °/2 s): inflating
+`R_leg` costs local heading stability, consistent with `slip_yaw_experiment.py`'s 16/40 → 10/40.
+
+**THE A/B ITSELF — 5 valid runs, no proven effect on RAW final error**
+
+Both arms run in ONE `--terrain --square`, so each row is a *paired* sample and the
+run-to-run variance cancels. `run1` used the old synthetic weights; the rest the trained
+model. Runs where CHAMP fell are excluded (see the ~40 % completion rate below).
+
+| run | ATE base | ATE slip | final base | final slip | yaw base | yaw slip | slip score |
+|---|---|---|---|---|---|---|---|
+| run1 (synthetic) | 3.658 | 3.113 | 4.707 | 3.065 | 7.5° | 22.9° | 0.34 [0.00,1.00] |
+| run2 | 2.325 | 3.520 | 5.192 | 3.099 | 15.7° | 15.7° | 0.68 [0.24,1.00] |
+| run4 | 4.385 | 4.706 | 13.540 | 5.801 | 125.6° | 60.2° | 0.69 [0.18,1.00] |
+| run6 | 7.546 | 2.766 | 5.374 | 9.177 | 30.9° | 72.9° | 0.68 [0.24,1.00] |
+| run10 | 4.516 | 4.660 | 5.760 | 3.824 | 38.4° | 4.4° | 0.64 [0.20,1.00] |
+
+* **final error**: baseline 6.92 m vs slip 4.99 m, paired diff **−1.92 m**, slip better in
+  **4/5** runs, t = −1.05.
+* **ATE**: baseline 4.49 m vs slip 3.75 m, paired diff −0.73 m, slip better in only **2/5**.
+* **yaw**: split 3/2 the other way, and the baseline's 125.6° in run4 shows the spread.
+
+**Verdict: not proven.** The final-error sign is consistently in the slip arm's favour but
+ATE disagrees with it, n = 5, and t ≈ −1. This matches `slip_yaw_experiment.py`'s offline
+result (inflating `R` is a coin flip on final error). Do not quote a slip-model improvement
+from this. The ablation in "Next steps" is what would settle it.
+
+**HEADLINE 3 — the gyro scale error is 1.9%, not 4–17%, and the old number was an artifact**
+
+Measured across 6 runs / 146 k logged samples, `wz_gyro` regressed on ground-truth `wz`:
+**0.976–0.984, mean 0.981**, correlation 0.92, bias < 0.003 rad/s — remarkably consistent.
+That is only **−0.43 °/s** at a `wz=0.4` corner, ~7° over four corners. It cannot explain the
+15–125° yaw errors, so **the gyro scale is not the heading culprit** and there is nothing
+there for a model to learn.
+
+§0's earlier "0.830 and 0.964, i.e. a 4–17% scale error" is **retracted**. The cause is a
+data defect found while checking it: **the gz `OdometryPublisher`'s angular velocity emits
+enormous spikes** — up to **583 rad/s** (~93 rev/s), in 0.3–0.5% of samples, in 4 of 6 runs.
+Regressing against unfiltered `gt_wz` collapses the slope to ~0.03. **Always reject
+`|gt_wz| > 1.5` before using ground-truth yaw rate.** The LINEAR channel is clean (max
+|gt_vx| 0.94 m/s, zero samples above 1 m/s), so the slip training labels — which use linear
+velocity only — are unaffected.
+
+What is left is integration of zero-mean gyro noise: `∫(gyro − truth)dt` over a run comes to
+**6–52°**, the same order as the observed final yaw errors (7–126°) and with no consistent
+sign. Heading drift here is a random walk, not a bias or scale that any feature can predict.
+
+**A "robot is turning" feature would NOT help the slip model** (asked and tested 2026-08-12).
+Two independent reasons:
+1. **Turning barely changes what `R_leg` predicts.** corr(|wz|, leg-odom velocity error) =
+   **0.006–0.145**; median error turning vs straight = **0.96–1.10x**. Almost no signal.
+   (The current 8 features indeed cannot see turning — best proxy is `cmd_minus_leg_vx` at
+   corr 0.29 — but per the above it does not matter.)
+2. **It would push the wrong way.** `R_leg` scales the leg-odom VELOCITY update, whose `H`
+   has a nonzero ψ column ∝ speed, so inflating `R` during turns *removes* what little
+   heading pull exists — which is exactly what `slip_yaw_experiment.py` measured
+   (heading-kick recovery 16/40 → 10/40 when `R` is inflated).
+
+The effect the intuition is reaching for already exists, in the right place: `Q(ψ,ψ)` gets
+`(gyro_scale_noise·ω_z)²·dt`, so heading uncertainty already grows while turning (at ω=0.4
+that term is ~400x the white-noise term), and `bias_update_max_wz: 0.10` already gates the
+bias pseudo-measurement out of turns.
+
+**Then the square moved to 5 m sides, and two runs promptly disagreed**
+
+`square_test.py --side` now defaults to **5 m** (20 m of travel, ~185 s end to end vs ~370 s).
+Two runs on it, same config, same trained model:
+
+| run | final base | final slip | verdict |
+|---|---|---|---|
+| sq5m #1 | 2.699 m | 0.526 m | slip **2.17 m better** |
+| sq5m #2 | 2.202 m | 4.317 m | slip **2.11 m worse** |
+
+Equal and opposite. Treat that as the calibration for how much any single square is worth.
+Note the 5 m route clips only two of the four `mu=0.3` patches, at its CORNERS (the patches
+were laid out for the 10 m square's leg midpoints), so it exercises the slip model *less* —
+and its percentages are not comparable to the 10 m numbers above (20 m travelled, not 40 m).
+
+**`/eskf/slip` renamed to `/eskf/slip_score`** (slip arm: `/eskf_slip/slip_score`). It is a
+Float64 diagnostic and was one character away from the slip ARM's namespace
+(`/eskf_slip/odom`), which got it read as a second trajectory more than once. The plot's
+third curve has always come from `/eskf_slip/odom`; nothing about the plot changed.
+
+**Runs now stop themselves** — `run_go2_teleop.sh` has a supervisor loop with two automatic
+exits: the square's drift summary appearing, and a `--timeout` wall-clock cap (300 s default
+under `--square`, sized for the 5 m route — a 10 m route needs it raised). Both call the same
+`cleanup()` as Ctrl-C, so a capped run still writes `REPORT.md` and `node_logs`, and the
+outcome line appears at the top of the report's Outcome section. Both paths verified live:
+`--timeout 60` fired at 60 s and left nothing running; the default run self-terminated at
+193 s on completion.
+
+**What changed**
+
+1. **`slip_log_path`** on `eskf_node` — one CSV row per *fused* leg-odom update (same call
+   site as inference, so train and test distributions match), features + ground-truth body
+   twist. The launcher writes `run_report/slip_features.csv` whenever the GT bridge is up.
+2. **`train_slip_model.py --runlog`** labels rows `clip(|v_leg − v_truth|/0.3, 0, 1)` and
+   reports the two things that matter: score spread, and score-vs-error decile gap /
+   correlation. Trained on run 1, val **corr +0.54**, worst-decile 0.83 vs best-decile 0.43.
+   `config/slip_model.txt` is now that model (provenance in its header comment);
+   `config/slip_model_synthetic.txt` keeps the old never-saw-a-robot weights for A/B.
+3. **`contact_frac` wired to `/foot_contacts`** — and thereby *measured dead*: 0.5 in
+   13467/13467 samples, structurally (the degenerate gate drops 0-and-4-feet samples; a trot
+   in between always stands on one diagonal pair). Optional `champ_msgs` dep.
+4. **`REPORT.md` now names the loaded slip model** (path, or `**FAILED TO LOAD**`). The old
+   failure mode — an empty `slip_model_path` silently making both arms identical — is now
+   visible instead of looking like a null result.
+
+**Traps that cost time this session — read before automating a run**
+
+* **`kill -INT` on a backgrounded `run_go2_teleop.sh` does nothing.** A command started
+  asynchronously from a non-interactive shell has SIGINT set to IGNORE, and bash cannot trap
+  an ignored-on-entry signal. The launcher gets SIGKILLed, `cleanup()` never runs, and the
+  next report is written against **stale `node_logs/`** — the archived square summary was
+  literally the previous session's numbers. Use `kill -TERM`.
+* **Orphans from that failure keep running.** A `square_test` node from a dead run survived
+  45 min and burned ~30 % of a core through five later runs. It no longer publishes
+  `/cmd_vel` once `done`, but check for orphans between runs.
+* **Never `colcon build` during a run.** The compiler was OOM-killed and the sim starved;
+  CHAMP fell 19 s in and logged 9964 m of scrabbling-feet "drift".
+
+**The terrain square only completes ~40 % of the time.** 5 of 8 honest attempts stalled
+("no progress for 9 s while commanded"), three of them at **x ≈ 2.1 m on the first leg** —
+the pad-blend annulus CLAUDE.md warns about. Budget ~2.5 launches per usable run.
+
+**Next steps**
+
+1. Lower `--patch-mu` (0.30 → ~0.1) and regenerate the world, then re-A/B. That is the only
+   way to find out whether the model detects slip, as opposed to calibrating `R`.
+2. Raise `leg_odom_vel_noise` from 0.10 to ~0.17 in the BASELINE arm and re-run. If the
+   baseline then matches the slip arm, the model is worth nothing beyond that one constant —
+   this is the cheapest possible ablation and it has not been run.
+3. `--adapt` / `--stiff` remain unvalidated. A/B one at a time.
+
+---
+
+### ⏱ SESSION HANDOFF — 2026-08-11 (previous)
 
 Branch `fix/sim-readiness-guard-and-drift-baseline`, pushed through `df74c58`, clean tree.
 Newer entries in this section are ordered oldest-first, so read this block, then jump to

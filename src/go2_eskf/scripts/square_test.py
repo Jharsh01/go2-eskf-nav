@@ -1,20 +1,28 @@
 #!/usr/bin/env python3
-"""Autonomous 10 m square drift test for the go2_eskf estimator.
+"""Autonomous square drift test for the go2_eskf estimator.
 
-Drives the Go2 around a square (default 10 m sides) by publishing /cmd_vel,
+Drives the Go2 around a square (default 5 m sides) by publishing /cmd_vel,
 closing the loop on GROUND TRUTH pose (/ground_truth/odom) — so the true path
 is a clean square regardless of estimator quality, and the gap between the
 ESKF estimate and truth is pure estimator drift. Replaces manual teleop for
 repeatable drift evaluation.
 
 Per corner it prints truth vs estimate vs error; at the end it prints a drift
-summary (final error, max error, error as % of ~40 m distance travelled).
+summary (final error, max error, error as % of the 4*side distance travelled).
+
+Side length matters for more than duration: on terrain.sdf the four `mu=0.3`
+patches sit at the midpoints of the **10 m** square's legs — (5,0), (10,-5),
+(5,-10), (0,-5) — so a 5 m square passes over only two of them, and at its
+CORNERS rather than mid-leg. If the friction patches are the point of the run,
+edit SQUARE / DEFAULT_PATCHES in scripts/make_terrain_world.py to match the side
+being driven and regenerate the world (that also moves the flat start pad's
+relief blend, so re-read the slope numbers it prints).
 
 Needs: the sim (CHAMP walking), ground_truth.launch.py, and the ESKF running.
 Respects the gait limits in gait.yaml (vx<=0.3, wz<=0.5).
 
   ros2 run go2_eskf square_test.py --ros-args -p use_sim_time:=true
-  # options after --:  --side 10 --speed 0.25 --ccw
+  # options after --:  --side 5 --speed 0.25 --ccw
 """
 
 import argparse
@@ -264,7 +272,7 @@ class SquareTest(Node):
 def main():
     argv = rclpy.utilities.remove_ros_args(sys.argv)
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--side", type=float, default=10.0, help="square side [m]")
+    ap.add_argument("--side", type=float, default=5.0, help="square side [m]")
     ap.add_argument("--speed", type=float, default=0.25, help="forward speed [m/s]")
     ap.add_argument("--ccw", action="store_true", help="counter-clockwise square")
     args = ap.parse_args(argv[1:])

@@ -166,7 +166,7 @@ class RunReport(Node):
         # --- latest sample of everything, merged into one CSV row at csv_hz
         self.gt = self.est = self.leg = None
         self.est_slip = None            # slip-adaptive arm (/eskf_slip/odom)
-        self.slip_score = None          # latest slip score (/eskf_slip/slip)
+        self.slip_score = None          # latest slip score (/eskf_slip/slip_score)
         self.imu = None
         self.cmd = (0.0, 0.0)
         self.body_pose = None
@@ -212,7 +212,7 @@ class RunReport(Node):
         # The slip SCORE, not just its effect. Without it you cannot tell a model
         # that detects slip from one that inflates R_leg everywhere — and those two
         # produce the same (worse) trajectory when yaw is the error that matters.
-        self.sub(Float64, "/eskf_slip/slip", self.on_slip, qd, optional=True)
+        self.sub(Float64, "/eskf_slip/slip_score", self.on_slip, qd, optional=True)
         self.sub(Odometry, "/odom/raw", self.on_leg, qd)
         self.sub(Imu, "/imu/data", self.on_imu, qos_profile_sensor_data)
         self.sub(Twist, "/cmd_vel", self.on_cmd, qd)
@@ -468,6 +468,41 @@ class RunReport(Node):
         except Exception:
             return "unavailable"
 
+    def slip_model_status(self):
+        """What the slip arm actually loaded — path included.
+
+        Mined from the ESKF node's own stdout rather than assumed, because the
+        failure this answers ("is the model file really being read?") is exactly
+        the one where a launch-file default *looks* right and the node still runs
+        with a fixed R_leg: an empty path, a bad path, or a parse error all fall
+        back silently to the baseline covariance, making the two arms identical.
+        """
+        path = os.path.join(self.out_dir, "node_logs", "eskf.log")
+        try:
+            lines = open(path, errors="replace").read().splitlines()
+        except OSError:
+            return None                      # logs are copied in at shutdown
+        for ln in lines:
+            if "slip model loaded from" in ln:
+                return "loaded — " + ln.split("slip model loaded from", 1)[1].strip()
+            if "failed to load slip model" in ln:
+                return "**FAILED TO LOAD** — " + ln.split("]", 1)[-1].strip()
+            if "slip_model_path is empty" in ln:
+                return "**NOT LOADED** — slip_model_path was empty, so the slip " \
+                       "arm ran with the fixed R_leg (identical to baseline)"
+        return "**no load message in eskf.log** — the slip arm may not have started"
+
+    def slip_log_status(self):
+        """Training-data tap: how many labelled rows this run recorded."""
+        path = os.path.join(self.out_dir, "slip_features.csv")
+        try:
+            with open(path, errors="replace") as f:
+                n = sum(1 for _ in f) - 1
+        except OSError:
+            return None
+        return (f"`slip_features.csv`: {n} rows — retrain with "
+                f"`train_slip_model.py --runlog {path}`")
+
     def log_issues(self):
         """WARN/ERROR lines from the per-node logs the launcher copied in."""
         d = os.path.join(self.out_dir, "node_logs")
@@ -514,11 +549,28 @@ class RunReport(Node):
             A("|---|---|")
             for k, v in ctx.items():
                 A(f"| {k} | {v} |")
+            sm = self.slip_model_status()
+            if sm:
+                A(f"| Slip model | {sm} |")
+            sl = self.slip_log_status()
+            if sl:
+                A(f"| Slip training data | {sl} |")
         A("")
 
         # ---- outcome
         A("## Outcome")
         A("")
+        # How the run ENDED, written by the launcher's supervisor loop just before
+        # teardown. A failsafe timeout is invisible in the data itself — the series
+        # simply stops — so without this line a capped run is indistinguishable
+        # from one that finished.
+        try:
+            outcome = open(os.path.join(self.out_dir, "outcome.txt")).read().strip()
+            if outcome:
+                A(outcome)
+                A("")
+        except OSError:
+            pass
         A("| metric | value |")
         A("|---|---|")
         A(f"| ground-truth path length | {self.path_len:.2f} m |")
@@ -634,14 +686,14 @@ class RunReport(Node):
                 if self.slip_scores:
                     s = stat(self.slip_scores)
                     lo, hi = min(self.slip_scores), max(self.slip_scores)
-                    A(f"Slip score (`/eskf_slip/slip`): mean {s[0]:.3f}, median "
+                    A(f"Slip score (`/eskf_slip/slip_score`): mean {s[0]:.3f}, median "
                       f"{s[1]:.3f}, range {lo:.3f}..{hi:.3f} → `R_leg` inflated "
                       f"{(1 + lo) ** 2:.2f}x..{(1 + hi) ** 2:.2f}x (λ=1). A narrow "
                       "range means the model is de-weighting leg odometry "
                       "EVERYWHERE, not detecting slip.")
                     A("")
                 else:
-                    A("No `/eskf_slip/slip` samples — the score was not recorded, "
+                    A("No `/eskf_slip/slip_score` samples — the score was not recorded, "
                       "so a model that detects slip cannot be told apart from one "
                       "that inflates `R_leg` uniformly.")
                     A("")

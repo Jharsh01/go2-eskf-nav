@@ -42,7 +42,7 @@ ros2 launch go2_eskf eskf.launch.py use_sim_time:=true
 Confirmed live topic names (correcting earlier assumptions): IMU `imu/data`, leg odometry
 `odom/raw`, GPS `gps/fix` (keep off — has a datum but left disabled), drive `/cmd_vel`
 (sim remaps `/cmd_vel/smooth`→`/cmd_vel`), `joint_states`, ESKF output `eskf/odom`, slip
-score `eskf/slip`. Drive the robot with:
+score `eskf/slip_score`. Drive the robot with:
 `ros2 topic pub /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.3}}" -r 10`.
 
 ---
