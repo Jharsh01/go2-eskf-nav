@@ -50,6 +50,16 @@ def generate_launch_description():
                     "(bounded drift, no global anchor).",
     )
 
+    declare_use_mag = DeclareLaunchArgument(
+        "use_magnetometer", default_value="false",
+        description="Fuse /imu/mag for ABSOLUTE HEADING. This is the only "
+                    "sensor that makes yaw observable: leg odometry constrains "
+                    "body-frame velocity only, so without it (and without GPS) "
+                    "psi runs open-loop on the integrated gyro and position "
+                    "error tracks yaw error 1:1. Needs a declination correct "
+                    "for the site — see magnetic_declination in the params.",
+    )
+
     eskf_node = Node(
         package="go2_eskf",
         executable="go2_eskf_node",
@@ -63,6 +73,8 @@ def generate_launch_description():
             # the bool parameter (a raw substitution would arrive as a string).
             {"use_gps": ParameterValue(
                 LaunchConfiguration("use_gps"), value_type=bool)},
+            {"use_magnetometer": ParameterValue(
+                LaunchConfiguration("use_magnetometer"), value_type=bool)},
         ],
     )
 
@@ -82,6 +94,8 @@ def generate_launch_description():
             {"use_sim_time": LaunchConfiguration("use_sim_time")},
             {"use_gps": ParameterValue(
                 LaunchConfiguration("use_gps"), value_type=bool)},
+            {"use_magnetometer": ParameterValue(
+                LaunchConfiguration("use_magnetometer"), value_type=bool)},
             {"use_slip_model": True},
             {"publish_tf": False},
             {"slip_model_path": LaunchConfiguration("slip_model_path")},
@@ -90,11 +104,13 @@ def generate_launch_description():
         remappings=[
             ("eskf/slip", "eskf_slip/slip"),
             ("eskf/gyro_bias", "eskf_slip/gyro_bias"),
+            ("eskf/mag_yaw", "eskf_slip/mag_yaw"),
         ],
     )
 
     return LaunchDescription(
         [declare_params, declare_use_sim_time, declare_log_path,
-         declare_use_gps, declare_slip, declare_slip_model_path,
-         declare_slip_odom_topic, eskf_node, slip_node]
+         declare_use_gps, declare_use_mag, declare_slip,
+         declare_slip_model_path, declare_slip_odom_topic,
+         eskf_node, slip_node]
     )

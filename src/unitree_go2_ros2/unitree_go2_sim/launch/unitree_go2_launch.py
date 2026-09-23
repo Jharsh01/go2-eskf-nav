@@ -255,6 +255,9 @@ def generate_launch_description():
             # '/velodyne_points@sensor_msgs/msg/LaserScan@gz.msgs.LaserScan',
             '/odom@nav_msgs/msg/Odometry@gz.msgs.Odometry',
             '/gps/fix@sensor_msgs/msg/NavSatFix[gz.msgs.NavSat',
+            # Magnetometer -> absolute heading for go2_eskf (use_magnetometer).
+            # Bridged unconditionally; the ESKF ignores it unless enabled.
+            '/imu/mag@sensor_msgs/msg/MagneticField[gz.msgs.Magnetometer',
             '/rgb_image@sensor_msgs/msg/Image@gz.msgs.Image',
             # D455 RGBD camera bridges
             '/d455/image@sensor_msgs/msg/Image[gz.msgs.Image',

@@ -16,6 +16,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
+#include <sensor_msgs/msg/magnetic_field.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
 #include <std_msgs/msg/float64.hpp>
 #include <tf2_ros/transform_broadcaster.h>
@@ -36,6 +37,18 @@ class EskfNode : public rclcpp::Node {
   void groundTruthCallback(const nav_msgs::msg::Odometry::SharedPtr msg);
   void cmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg);
   void jointStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg);
+  void magCallback(const sensor_msgs::msg::MagneticField::SharedPtr msg);
+
+  // Tilt-compensated compass: body-frame field -> ENU heading in the state's own
+  // convention (psi = 0 is body-x-East). Returns false when the reading is
+  // rejected (implausible magnitude, or a horizontal component too small for
+  // atan2 to mean anything), leaving yaw_out untouched.
+  bool magYawFromField(const Eigen::Vector3d& m_body, double& yaw_out) const;
+
+  // Roll/pitch for tilt compensation, taken from the gravity low-pass rather
+  // than roll_/pitch_ — under attitude_source "gravity_lp" those are forced to
+  // zero, which would silently disable tilt compensation on sloped terrain.
+  void bodyTilt(double& roll, double& pitch) const;
 
   // Phase 3: run the slip model on the latest features and return the
   // (possibly inflated) leg-odometry covariance for this correction.
@@ -101,6 +114,37 @@ class EskfNode : public rclcpp::Node {
   double bias_update_max_wz_ = 0.10;  // [rad/s]
   uint64_t n_bias_skipped_ = 0;
 
+  // --- Absolute heading from a magnetometer -------------------------------
+  // The ONLY sensor here that makes yaw observable. Everything else constrains
+  // body-frame velocity, which is blind to the null direction
+  // dv = dpsi*(-v_y, v_x); GPS position breaks that too but only while moving,
+  // whereas a compass works standing still. Off by default — it needs a
+  // declination that is correct for the deployment site, and a sim magnetometer
+  // is far kinder than a real one near motors and steel.
+  bool use_magnetometer_ = false;
+  double r_mag_yaw_ = 0.0225;        // [rad^2] variance of the heading measurement
+  double mag_declination_rad_ = 0.0; // magnetic north east of true north
+  double mag_yaw_offset_rad_ = 0.0;  // sensor mounting yaw, added after the sign
+  double mag_yaw_sign_ = 1.0;        // -1 mirrors a flipped-mount compass
+  bool mag_tilt_compensate_ = true;
+  // Plausibility gate on |B|. Hard/soft-iron disturbances and nearby motors show
+  // up first as a magnitude that no longer matches the ambient field, which is
+  // the cheapest way to spot a reading that must not be fused. <= 0 disables it.
+  double mag_norm_ref_ = 0.0;        // [T] expected ambient field magnitude
+  double mag_norm_tol_ = 0.25;       // accept |‖B‖-ref| <= tol*ref
+  // Below this the levelled horizontal component is numerical noise and atan2
+  // returns an essentially random heading (the degenerate case: field straight
+  // down, i.e. standing at a magnetic pole, or a dead sensor reading zeros).
+  double mag_min_horiz_ = 1.0e-9;    // [T]
+  // Absolute-heading updates do not need to run at sensor rate: fusing a 100 Hz
+  // compass with an optimistic R crushes P(psi) and lets a biased heading
+  // dominate the gyro entirely. Throttle so R stays the honest trust knob.
+  double mag_min_interval_ = 0.1;    // [s]
+  bool mag_seed_initial_yaw_ = true; // start psi at the compass, not at 0
+  bool have_last_mag_update_ = false;
+  rclcpp::Time last_mag_update_time_;
+  uint64_t n_mag_msgs_ = 0, n_mag_rejected_ = 0, n_mag_applied_ = 0;
+
   // champ::Odometry::getVelocities early-returns hard zeros for vx, vy AND wz
   // whenever all four or zero feet are in contact ("nothing to calculate"), and
   // gait.yaml's stance_duration 0.25 makes that a large fraction of a trot. Those
@@ -153,11 +197,16 @@ class EskfNode : public rclcpp::Node {
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr gt_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::MagneticField>::SharedPtr mag_sub_;
   rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr odom_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr slip_pub_;
   // b_g is the state that corrupts heading (predict integrates gyro_z - b_g), so
   // publish it: a poisoned bias is invisible in a position-error plot.
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr gyro_bias_pub_;
+  // The raw compass heading, published BEFORE it is fused. Calibrating
+  // mag_yaw_sign/mag_yaw_offset means comparing this against ground-truth yaw;
+  // without it that is guesswork, exactly as it was for b_g.
+  rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr mag_yaw_pub_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 
   std::ofstream log_file_;

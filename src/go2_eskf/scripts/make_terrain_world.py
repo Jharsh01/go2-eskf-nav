@@ -267,6 +267,11 @@ HEADER = """<?xml version="1.0" ?>
       <heading_deg>0</heading_deg>
     </spherical_coordinates>
 
+    <!-- Ambient magnetic field, ENU (east, north, up) in tesla — keep in sync
+         with flat.sdf and with magnetic_declination in config/eskf_params.yaml.
+           declination = atan2(5.5645, 22.8758) = 13.67 deg, |B| = 48.3 uT -->
+    <magnetic_field>5.5645e-6 22.8758e-6 -42.3884e-6</magnetic_field>
+
     <physics name="1ms" type="bullet-featherstone">
       <max_step_size>0.001</max_step_size>
       <real_time_factor>1.0</real_time_factor>
@@ -280,6 +285,7 @@ HEADER = """<?xml version="1.0" ?>
     <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
     <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
     <plugin filename="gz-sim-navsat-system" name="gz::sim::systems::NavSat"/>
+    <plugin filename="gz-sim-magnetometer-system" name="gz::sim::systems::Magnetometer"/>
 
     <!-- Lights -->
     <light type="directional" name="sun">

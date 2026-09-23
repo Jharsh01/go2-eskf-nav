@@ -107,6 +107,51 @@
             </sensor>
         </gazebo>
 
+        <!-- Magnetometer — ADDED for go2_eskf (vendored edit #3, additive).
+             Absolute heading is the only thing that makes the ESKF's yaw state
+             observable: leg odometry constrains body-frame velocity only, so
+             without a compass (or GPS) yaw runs open-loop on the integrated
+             gyro. Mounted on imu_link, which sits at identity rpy relative to
+             trunk, so the reported field is in body axes.
+
+             Non-rendering, like navsat — it does NOT reintroduce the Ogre2
+             offscreen-render segfault that the cameras/LiDARs caused, so it is
+             safe to leave enabled. Requires gz-sim-magnetometer-system and a
+             <magnetic_field> in the world (see go2_eskf/worlds/flat.sdf).
+             Consumed via eskf_node's use_magnetometer parameter (off by
+             default), so this block is inert until that is switched on. -->
+        <gazebo reference="imu_link">
+            <sensor name="mag_sensor" type="magnetometer">
+                <always_on>true</always_on>
+                <update_rate>50</update_rate>
+                <topic>imu/mag</topic>
+                <gz_frame_id>imu_link</gz_frame_id>
+                <magnetometer>
+                    <!-- ~0.1 uT/axis. A real MEMS compass is noisier than this
+                         AND carries hard/soft-iron bias that no <noise> block
+                         models, so treat sim heading results as optimistic. -->
+                    <x>
+                        <noise type="gaussian">
+                            <mean>0.0</mean>
+                            <stddev>1e-7</stddev>
+                        </noise>
+                    </x>
+                    <y>
+                        <noise type="gaussian">
+                            <mean>0.0</mean>
+                            <stddev>1e-7</stddev>
+                        </noise>
+                    </y>
+                    <z>
+                        <noise type="gaussian">
+                            <mean>0.0</mean>
+                            <stddev>1e-7</stddev>
+                        </noise>
+                    </z>
+                </magnetometer>
+            </sensor>
+        </gazebo>
+
         <!-- GPS / NavSat plugin — simulates u-blox standard GPS (~0.5 m horizontal noise) -->
         <gazebo reference="gps_link">
             <sensor name="navsat_sensor" type="navsat">

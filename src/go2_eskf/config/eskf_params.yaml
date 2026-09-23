@@ -108,6 +108,40 @@ eskf_node:
     gps_pos_noise: 0.5                # [m]    ~u-blox horizontal
     vz_zero_noise: 0.3                # [m/s]  vz≈0 vertical pseudo-measurement (allows bob)
 
+    # --- Absolute heading from a magnetometer
+    # THE ONLY SENSOR HERE THAT MAKES YAW OBSERVABLE. correctLegOdom predicts
+    # h = Rz(-psi)*v_world, whose Jacobian has the null direction
+    # dv = dpsi*(-v_y, v_x): rotating heading and world velocity together is
+    # invisible to leg odometry, so with gps off psi runs open-loop on the
+    # integrated gyro and position error tracks yaw error 1:1 (measured: 4.3 deg
+    # -> 2.3 m, 65 deg -> 12.7 m over a 10 m square). GPS position also breaks
+    # that null space, but only while moving; a compass works standing still.
+    #
+    # OFF by default. It needs a declination correct for the site, and the sim
+    # magnetometer is ideal in a way no real one is (no hard/soft iron, no motor
+    # fields), so leaving it on by default would flatter the filter.
+    use_magnetometer: false
+    mag_topic: "imu/mag"              # sensor_msgs/MagneticField
+    mag_yaw_noise: 0.15               # [rad] std-dev of the heading measurement
+    # Magnetic north east of true north, at the ROBOT'S LOCATION (NOAA/IGRF).
+    # 13.67 deg matches the <magnetic_field> vector in this package's worlds
+    # (5.5645e-6, 22.8758e-6, -42.3884e-6 ENU): atan2(5.5645, 22.8758).
+    magnetic_declination: 13.67       # [deg] east-positive
+    # Mount calibration. Compare /eskf/mag_yaw (published pre-fusion) against
+    # ground-truth yaw while walking straight: a constant gap is the offset, a
+    # gap that grows with the opposite sign means the mount is mirrored.
+    mag_yaw_sign: 1.0                 # -1 mirrors a flipped-mount compass
+    mag_yaw_offset: 0.0               # [deg] constant mounting yaw, applied after the sign
+    mag_tilt_compensate: true         # level the field using the gravity low-pass
+    # Plausibility gate on |B|: a disturbed field has a wrong DIRECTION long
+    # before it looks wrong, and magnitude is the cheap tell-tale. 0 disables it
+    # (the right value is site-specific; a wrong one rejects every sample).
+    mag_norm_ref: 0.0                 # [T] expected ambient magnitude, e.g. 4.8e-5
+    mag_norm_tol: 0.25                # accept within +/-25% of the reference
+    mag_min_horiz: 1.0e-9             # [T] below this the heading is atan2 noise
+    mag_min_interval: 0.1             # [s] throttle; R, not sensor rate, sets trust
+    mag_seed_initial_yaw: true        # set psi from the first good heading
+
     # --- Phase 3: slip-adaptive leg covariance
     use_slip_model: false             # true -> inflate R_leg by the slip score
     slip_model_path: ""               # path to weights (config/slip_model.txt)

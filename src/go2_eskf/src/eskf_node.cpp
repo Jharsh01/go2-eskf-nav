@@ -92,6 +92,28 @@ EskfNode::EskfNode() : rclcpp::Node("eskf_node") {
   // A huge value disables the gate, restoring the previous always-fuse behaviour.
   bias_update_max_wz_ = declare_parameter<double>("bias_update_max_wz", 0.10);
 
+  // --- Absolute heading from a magnetometer (makes yaw observable)
+  use_magnetometer_ = declare_parameter<bool>("use_magnetometer", false);
+  const auto mag_topic = declare_parameter<std::string>("mag_topic", "imu/mag");
+  const double mag_std = declare_parameter<double>("mag_yaw_noise", 0.15);
+  r_mag_yaw_ = mag_std * mag_std;
+  // Declination is a property of WHERE the robot is, not of the sensor: a
+  // compass points at magnetic north, the filter's psi is referenced to true
+  // north via ENU. Get it from NOAA/IGRF for the deployment site. The default
+  // matches the <magnetic_field> in this package's worlds.
+  mag_declination_rad_ =
+      declare_parameter<double>("magnetic_declination", 13.67) * M_PI / 180.0;
+  mag_yaw_offset_rad_ =
+      declare_parameter<double>("mag_yaw_offset", 0.0) * M_PI / 180.0;
+  mag_yaw_sign_ = declare_parameter<double>("mag_yaw_sign", 1.0);
+  mag_tilt_compensate_ = declare_parameter<bool>("mag_tilt_compensate", true);
+  mag_norm_ref_ = declare_parameter<double>("mag_norm_ref", 0.0);
+  mag_norm_tol_ = declare_parameter<double>("mag_norm_tol", 0.25);
+  mag_min_horiz_ = declare_parameter<double>("mag_min_horiz", 1.0e-9);
+  mag_min_interval_ = declare_parameter<double>("mag_min_interval", 0.1);
+  mag_seed_initial_yaw_ =
+      declare_parameter<bool>("mag_seed_initial_yaw", true);
+
   // --- Phase 3: slip-adaptive leg covariance
   use_slip_model_ = declare_parameter<bool>("use_slip_model", false);
   slip_lambda_ = declare_parameter<double>("slip_lambda", 1.0);
@@ -146,6 +168,17 @@ EskfNode::EskfNode() : rclcpp::Node("eskf_node") {
         std::bind(&EskfNode::jointStateCallback, this, std::placeholders::_1));
     slip_pub_ = create_publisher<std_msgs::msg::Float64>("eskf/slip", 10);
   }
+  if (use_magnetometer_) {
+    mag_sub_ = create_subscription<sensor_msgs::msg::MagneticField>(
+        mag_topic, rclcpp::SensorDataQoS(),
+        std::bind(&EskfNode::magCallback, this, std::placeholders::_1));
+    mag_yaw_pub_ = create_publisher<std_msgs::msg::Float64>("eskf/mag_yaw", 10);
+    RCLCPP_INFO(get_logger(),
+                "magnetometer ON: %s, declination %+.2f deg, sign %+.0f, "
+                "offset %+.2f deg, sigma %.3f rad. Yaw is now OBSERVABLE.",
+                mag_topic.c_str(), mag_declination_rad_ * 180.0 / M_PI,
+                mag_yaw_sign_, mag_yaw_offset_rad_ * 180.0 / M_PI, mag_std);
+  }
   odom_pub_ = create_publisher<nav_msgs::msg::Odometry>(out_topic, 10);
   gyro_bias_pub_ = create_publisher<std_msgs::msg::Float64>("eskf/gyro_bias", 10);
   if (publish_tf_) {
@@ -161,9 +194,17 @@ EskfNode::EskfNode() : rclcpp::Node("eskf_node") {
   }
 
   RCLCPP_INFO(get_logger(),
-              "go2_eskf node up. IMU=%s leg=%s gps=%s(%s) -> %s",
+              "go2_eskf node up. IMU=%s leg=%s gps=%s(%s) mag=%s -> %s",
               imu_topic.c_str(), leg_topic.c_str(), gps_topic.c_str(),
-              use_gps_ ? "on" : "off", out_topic.c_str());
+              use_gps_ ? "on" : "off",
+              use_magnetometer_ ? "on" : "off", out_topic.c_str());
+  if (!use_gps_ && !use_magnetometer_) {
+    RCLCPP_WARN(get_logger(),
+                "No absolute heading or position reference (gps off, mag off): "
+                "yaw is EXACTLY unobservable and runs open-loop on the gyro. "
+                "Position error will track yaw error 1:1. Set use_magnetometer "
+                "or use_gps to close that loop.");
+  }
 }
 
 void EskfNode::imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg) {
@@ -197,12 +238,18 @@ void EskfNode::imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg) {
 
   // Resolve the effective acceleration and attitude fed to the filter. roll_/
   // pitch_ are only used to cancel gravity (and to label the output odom).
+  // Track gravity+mount with a slow low-pass. Maintained for EVERY
+  // attitude_source, not just "gravity_lp": the magnetometer needs a body-frame
+  // gravity direction for tilt compensation, and under "gravity_lp" roll_/pitch_
+  // are forced to zero so they cannot supply one. Identical update to the
+  // in-branch version it replaces, so the gravity_lp path is unchanged.
+  grav_lp_ = grav_lp_beta_ * grav_lp_ + (1.0 - grav_lp_beta_) * accel;
+
   Eigen::Vector3d accel_eff = accel;
   if (attitude_source_ == "gravity_lp") {
-    // Track gravity+mount with a slow low-pass; subtract it to leave motion
-    // acceleration, then re-add +g on z so EskfCore's gravity term cancels and
-    // a_world = Rz(yaw) * motion. Robust to the IMU frame flip and to spikes.
-    grav_lp_ = grav_lp_beta_ * grav_lp_ + (1.0 - grav_lp_beta_) * accel;
+    // Subtract gravity to leave motion acceleration, then re-add +g on z so
+    // EskfCore's gravity term cancels and a_world = Rz(yaw) * motion. Robust to
+    // the IMU frame flip and to contact spikes.
     Eigen::Vector3d motion = accel - grav_lp_;
     if (motion.norm() > accel_clip_) motion = motion.normalized() * accel_clip_;
     accel_eff = motion + Eigen::Vector3d(0.0, 0.0, kGravity);
@@ -360,6 +407,150 @@ void EskfNode::jointStateCallback(
   }
   joint_vel_mean_ = sum / static_cast<double>(msg->velocity.size());
   joint_vel_max_ = mx;
+}
+
+void EskfNode::bodyTilt(double& roll, double& pitch) const {
+  // grav_lp_ is the slowly-varying part of the accelerometer — gravity plus any
+  // mount offset — expressed in body axes. Its direction IS body "up", which is
+  // exactly what is needed to level the magnetometer. Preferred over roll_/
+  // pitch_ because attitude_source "gravity_lp" pins those to zero.
+  const double n = grav_lp_.norm();
+  if (have_grav_lp_ && n > 1e-3) {
+    const Eigen::Vector3d u = grav_lp_ / n;
+    roll = std::atan2(u.y(), u.z());
+    pitch = std::atan2(-u.x(), std::hypot(u.y(), u.z()));
+    return;
+  }
+  roll = roll_;
+  pitch = pitch_;
+}
+
+bool EskfNode::magYawFromField(const Eigen::Vector3d& m_body,
+                               double& yaw_out) const {
+  // Magnitude gate. A field that no longer matches the ambient magnitude has
+  // been disturbed (hard/soft iron, a motor, a steel beam), and its DIRECTION is
+  // wrong long before it looks obviously wrong — so magnitude is the cheap
+  // tell-tale. Disabled when mag_norm_ref_ <= 0, since the right value is
+  // site-specific and a wrong one silently rejects everything.
+  if (mag_norm_ref_ > 0.0) {
+    if (std::abs(m_body.norm() - mag_norm_ref_) > mag_norm_tol_ * mag_norm_ref_) {
+      return false;
+    }
+  }
+
+  // Level the field: rotate roll and pitch out, leaving a vector whose
+  // horizontal angle differs from the world field's only by the yaw we want.
+  // rotBodyToWorld(roll, pitch, 0) is exactly Ry(pitch)*Rx(roll), so this reuses
+  // the filter's own rotation convention instead of restating it here.
+  Eigen::Vector3d m_lev = m_body;
+  if (mag_tilt_compensate_) {
+    double roll = 0.0, pitch = 0.0;
+    bodyTilt(roll, pitch);
+    m_lev = EskfCore::rotBodyToWorld(roll, pitch, 0.0) * m_body;
+  }
+
+  // atan2 on a vanishing horizontal component returns noise, not a heading.
+  if (std::hypot(m_lev.x(), m_lev.y()) < mag_min_horiz_) return false;
+
+  // Rz(psi) maps the levelled field onto the world field, so psi is just the
+  // angle between the two:
+  //     psi = atan2(B_north, B_east) - atan2(m_lev.y, m_lev.x)
+  // The horizontal world field points at MAGNETIC north, whose ENU angle
+  // (counter-clockwise from East, matching psi's convention) is
+  // pi/2 - declination. Declination therefore enters here and nowhere else.
+  const double beta = M_PI / 2.0 - mag_declination_rad_;
+  const double psi = beta - std::atan2(m_lev.y(), m_lev.x());
+  // Sign first, then offset: a mirrored mount is psi -> -psi, and any constant
+  // mounting yaw is applied on top of the corrected sense, not before it.
+  yaw_out = EskfCore::wrapAngle(mag_yaw_sign_ * psi + mag_yaw_offset_rad_);
+  return true;
+}
+
+void EskfNode::magCallback(const sensor_msgs::msg::MagneticField::SharedPtr msg) {
+  const Eigen::Vector3d m(msg->magnetic_field.x, msg->magnetic_field.y,
+                          msg->magnetic_field.z);
+  RCLCPP_INFO_ONCE(get_logger(),
+                   "First magnetometer sample: |B| = %.2f uT — absolute heading "
+                   "is available, so yaw is no longer open-loop on the gyro.",
+                   1e6 * m.norm());
+  ++n_mag_msgs_;
+  if (!initialized_) return;  // no filter state to correct or seed yet
+
+  double yaw_meas = 0.0;
+  if (!magYawFromField(m, yaw_meas)) {
+    ++n_mag_rejected_;
+    // Name both gates: a reading can fail on magnitude OR on a vanishing
+    // horizontal component, and reporting only the first sends whoever reads
+    // this log hunting the wrong parameter.
+    RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+                         "magnetometer sample rejected: |B| = %.2f uT "
+                         "(mag_norm_ref %.2f uT +/- %.0f%%, 0 = gate off), "
+                         "or its horizontal component fell below mag_min_horiz. "
+                         "Heading NOT fused.",
+                         1e6 * m.norm(), 1e6 * mag_norm_ref_,
+                         100.0 * mag_norm_tol_);
+    return;
+  }
+
+  if (mag_yaw_pub_) {
+    std_msgs::msg::Float64 out;
+    out.data = yaw_meas;
+    mag_yaw_pub_->publish(out);  // pre-fusion, for sign/offset calibration
+  }
+
+  const rclcpp::Time stamp(msg->header.stamp);
+
+  // First accepted heading: SET psi instead of correcting toward it. The filter
+  // starts at psi = 0, so a true heading of (say) 3 rad would otherwise be
+  // walked in over several updates while position integrates in the wrong
+  // direction throughout. Seeding is the honest operation — this is an
+  // initialization, not a measurement — and it overrides whatever yaw seed the
+  // IMU-orientation path supplied.
+  if (mag_seed_initial_yaw_ && !have_last_mag_update_) {
+    Vec8 x = eskf_->state();
+    const double before = x(PSI);
+    x(PSI) = yaw_meas;
+    // Copy P out rather than passing eskf_->covariance() straight back in, so
+    // reset() is never handed a reference to the member it is assigning.
+    // P(psi,psi) is deliberately left as-is: staying at the prior uncertainty
+    // is the conservative choice, and later headings tighten it normally.
+    const Mat8 P = eskf_->covariance();
+    eskf_->reset(x, P);
+    have_last_mag_update_ = true;
+    last_mag_update_time_ = stamp;
+    ++n_mag_applied_;
+    RCLCPP_INFO(get_logger(),
+                "seeded initial yaw from magnetometer: %+.2f -> %+.2f deg",
+                before * 180.0 / M_PI, yaw_meas * 180.0 / M_PI);
+    return;
+  }
+
+  // Throttle so R, not the sensor's publish rate, sets how much the compass is
+  // trusted (see mag_min_interval_ in the header).
+  if (have_last_mag_update_ &&
+      (stamp - last_mag_update_time_).seconds() < mag_min_interval_) {
+    return;
+  }
+
+  // Capture the residual BEFORE fusing — afterwards the state has already moved
+  // toward the measurement and the number would always look small.
+  const double residual =
+      EskfCore::wrapAngle(yaw_meas - eskf_->state()(PSI));
+
+  last_mag_update_time_ = stamp;
+  have_last_mag_update_ = true;
+  eskf_->correctYaw(yaw_meas, r_mag_yaw_);
+  ++n_mag_applied_;
+
+  RCLCPP_INFO_THROTTLE(
+      get_logger(), *get_clock(), 10000,
+      "magnetometer: %lu msgs, %lu fused, %lu rejected | mag=%+.1f deg, "
+      "filter=%+.1f deg, pre-fusion residual=%+.1f deg",
+      static_cast<unsigned long>(n_mag_msgs_),
+      static_cast<unsigned long>(n_mag_applied_),
+      static_cast<unsigned long>(n_mag_rejected_),
+      yaw_meas * 180.0 / M_PI, eskf_->state()(PSI) * 180.0 / M_PI,
+      residual * 180.0 / M_PI);
 }
 
 Eigen::Matrix2d EskfNode::legCovarianceForUpdate(double leg_vx, double leg_vy) {

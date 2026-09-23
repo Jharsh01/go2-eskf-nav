@@ -157,6 +157,113 @@ TEST(EskfLegOdom, HigherCovarianceMeansSmallerUpdate) {
   EXPECT_GT(tight.state()(VX), loose.state()(VX));
 }
 
+// === Absolute heading (magnetometer) =======================================
+
+namespace {
+// A filter started at a known heading, for the yaw-correction tests.
+EskfCore makeAtYaw(double psi, double p0 = 1.0) {
+  EskfCore::Config cfg;
+  cfg.initial_state = Vec8::Zero();
+  cfg.initial_state(PSI) = psi;
+  cfg.initial_covariance = Mat8::Identity() * p0;
+  return EskfCore(cfg);
+}
+}  // namespace
+
+TEST(EskfYaw, PullsYawTowardMeasurement) {
+  auto e = makeAtYaw(0.0);
+  e.correctYaw(0.8, 0.01);
+  EXPECT_NEAR(e.state()(PSI), 0.8, 0.05);
+}
+
+TEST(EskfYaw, ReducesYawUncertainty) {
+  auto e = makeAtYaw(0.0);
+  const double before = e.covariance()(PSI, PSI);
+  e.correctYaw(0.3, 0.01);
+  EXPECT_LT(e.covariance()(PSI, PSI), before);
+}
+
+TEST(EskfYaw, HigherCovarianceMeansSmallerUpdate) {
+  auto tight = makeAtYaw(0.0);
+  auto loose = makeAtYaw(0.0);
+  tight.correctYaw(1.0, 0.01);
+  loose.correctYaw(1.0, 100.0);
+  EXPECT_GT(tight.state()(PSI), loose.state()(PSI));
+}
+
+// THE test for this update. psi lives on a circle, so the innovation must be
+// wrapped; every other correct*() here differences a linear quantity, and
+// copying their pattern would be the bug.
+//
+// State +3.10 rad, measurement -3.10 rad: the same heading to within 0.083 rad
+// the short way round, but 6.20 rad apart if differenced naively. The gain is
+// deliberately held LOW (small P, large R) — at gain ~1 both the wrapped and
+// unwrapped forms happen to land in the same place, so only a partial update
+// tells them apart.
+TEST(EskfYaw, InnovationWrapsAcrossThePiSeam) {
+  auto e = makeAtYaw(3.10, 0.01);
+  e.correctYaw(-3.10, 0.09);  // K = 0.01/(0.01+0.09) = 0.1
+
+  // Short way: 3.10 + 0.1*0.0832 ~= 3.108, i.e. barely moved.
+  // Naive difference would give 3.10 + 0.1*(-6.20) ~= 2.48.
+  EXPECT_NEAR(e.state()(PSI), 3.108, 0.02);
+  EXPECT_GT(e.state()(PSI), 3.0) << "innovation was not wrapped: yaw was "
+                                    "driven the long way round the circle";
+}
+
+TEST(EskfYaw, MeasurementNearSeamStillConverges) {
+  // Same seam, but now trusting the compass: the estimate should end up AT the
+  // measurement, expressed in wrapped form.
+  auto e = makeAtYaw(3.13, 1.0);
+  e.correctYaw(-3.13, 1e-6);
+  EXPECT_NEAR(std::abs(EskfCore::wrapAngle(e.state()(PSI) - (-3.13))), 0.0, 1e-3);
+}
+
+TEST(EskfYaw, OutputStaysWrapped) {
+  auto e = makeAtYaw(3.0);
+  e.correctYaw(-3.0, 1e-6);
+  EXPECT_LE(std::abs(e.state()(PSI)), M_PI + 1e-9);
+}
+
+TEST(EskfYaw, LeavesPositionAndVelocityAloneWhenUncorrelated) {
+  // With a diagonal P, H touches only the PSI column, so K is non-zero only in
+  // the PSI row: a heading fix must not silently move position or velocity.
+  auto e = makeAtYaw(0.0);
+  e.correctYaw(1.2, 0.01);
+  EXPECT_NEAR(e.state()(PX), 0.0, 1e-12);
+  EXPECT_NEAR(e.state()(PY), 0.0, 1e-12);
+  EXPECT_NEAR(e.state()(VX), 0.0, 1e-12);
+  EXPECT_NEAR(e.state()(VY), 0.0, 1e-12);
+}
+
+TEST(EskfYaw, CovarianceStaysHealthy) {
+  auto e = makeAtYaw(0.5);
+  for (int i = 0; i < 50; ++i) {
+    e.predictImu(kRestAccel, 0.05, 0, 0, 0.01);
+    e.correctYaw(0.5, 0.0225);
+  }
+  EXPECT_TRUE(isSymmetric(e.covariance()));
+  EXPECT_TRUE(isPosDef(e.covariance()));
+}
+
+TEST(EskfYaw, ObservesYawThatLegOdomCannot) {
+  // The point of the whole feature. Walking straight, leg odometry leaves yaw
+  // uncertainty growing (its Jacobian is blind to the dpsi/dv null direction);
+  // an absolute heading collapses it.
+  auto no_mag = makeAtYaw(0.0, 0.2);
+  auto with_mag = makeAtYaw(0.0, 0.2);
+  for (int i = 0; i < 100; ++i) {
+    no_mag.predictImu(kRestAccel, 0.0, 0, 0, 0.01);
+    with_mag.predictImu(kRestAccel, 0.0, 0, 0, 0.01);
+    no_mag.correctLegOdom(Eigen::Vector2d(0.3, 0.0),
+                          Eigen::Matrix2d::Identity() * 0.04);
+    with_mag.correctLegOdom(Eigen::Vector2d(0.3, 0.0),
+                            Eigen::Matrix2d::Identity() * 0.04);
+    with_mag.correctYaw(0.0, 0.0225);
+  }
+  EXPECT_LT(with_mag.covariance()(PSI, PSI), no_mag.covariance()(PSI, PSI));
+}
+
 // === Utility ===============================================================
 
 TEST(EskfUtil, WrapAngleBounds) {

@@ -18,6 +18,7 @@ PX, PY, PZ, VX, VY, VZ, PSI, BG = range(8)
 # Measurement covariances — MUST match tools/replay_eskf.cpp.
 LEG_R = np.diag([0.04, 0.04])
 GPS_R = np.diag([0.25, 0.25])
+YAW_R = 0.0225  # [rad^2] absolute-heading (magnetometer) variance, 0.15 rad std
 
 
 def wrap_angle(a):
@@ -121,6 +122,15 @@ class EskfReference:
         h = self.x[PX:PY + 1]
         self._joseph_update(pos_xy - h, H, R)
 
+    def correct_yaw(self, yaw_meas, r=YAW_R):
+        """Absolute heading (magnetometer). Mirrors EskfCore::correctYaw."""
+        H = np.zeros((1, 8))
+        H[0, PSI] = 1.0
+        # Wrapped innovation — the only residual in this filter that lives on a
+        # circle. See the comment in eskf_core.cpp for why this matters.
+        y = np.array([wrap_angle(yaw_meas - self.x[PSI])])
+        self._joseph_update(y, H, np.array([[r]]))
+
 
 def run_csv(input_csv, output_csv):
     """Replay an input stream and dump the state after every event."""
@@ -135,6 +145,8 @@ def run_csv(input_csv, output_csv):
             f.correct_leg_odom(r[8:10])
         elif t == 2:
             f.correct_gps(r[8:10])
+        elif t == 3:
+            f.correct_yaw(r[8])
         rows.append(f.x.copy())
     np.savetxt(output_csv, np.array(rows), delimiter=",", fmt="%.17g")
 
@@ -162,6 +174,13 @@ def generate_input(path, n=600, seed=0):
             gx = 0.25 * t + 0.1 * rng.standard_normal()
             gy = 0.05 * t + 0.1 * rng.standard_normal()
             lines.append(f"2,0,0,0,0,0,0,0,{gx:.17g},{gy:.17g}")
+        if k % 20 == 0:  # magnetometer heading at 5 Hz
+            # Deliberately started near +pi and swept upward so the sequence
+            # CROSSES THE +/-pi SEAM early in the run. That is the one case an
+            # unwrapped residual gets catastrophically wrong, so the
+            # cross-validation must exercise it rather than stay mid-range.
+            yaw_m = wrap_angle(3.0 + 0.4 * t + 0.01 * rng.standard_normal())
+            lines.append(f"3,0,0,0,0,0,0,0,{yaw_m:.17g},0")
     with open(path, "w") as fh:
         fh.write("\n".join(lines) + "\n")
 

@@ -38,6 +38,16 @@ Nominal state (8):
 | 6   | `psi` | yaw / heading | rad |
 | 7   | `b_g` | yaw-rate gyro bias | rad/s |
 
+`b_g` earns a state because a bias integrates into a *ramp* in `ψ` that no `Q`
+can remove, it is independently observable (leg odometry's yaw rate is
+bias-free, so `ω_gyro − ω_leg` measures it directly), and `F(ψ, b_g) = −dt`
+builds the cross-covariance that lets a bias observation also correct the
+heading it already corrupted. Accelerometer bias does **not** get one: it is
+already absorbed by the gravity low-pass (§6.1), it is confounded with tilt
+error (which is not a state here), and `accel_noise: 5.0` deliberately stops the
+accelerometer from driving velocity at all — so estimating its bias would buy
+nothing. Persistent + observable + actually affecting the estimate is the test.
+
 **Why 8 and not 15?** Roll and pitch are directly observable from the IMU
 (gravity defines "down"), so we read them from the IMU rather than estimating
 them. We keep only the slowly-drifting, weakly-observable quantities as states.
@@ -110,6 +120,24 @@ inflated when slip is detected, so the filter leans on IMU+GPS instead.
 **GPS** — measures world position `[x, y]`: `h = [px, py]`, `H` selects them.
 This is the only globally-anchored sensor; it bounds long-term drift.
 
+**Absolute heading** (magnetometer) — measures `ψ` directly: `h = ψ`, so `H` is
+a single 1 in the `PSI` column. See §9.
+
+The heading update is the one correction whose **innovation must be wrapped**:
+
+```
+y = wrapAngle(ψ_meas − ψ)        NOT  (ψ_meas − ψ)
+```
+
+`ψ` lives on a circle. A state of `+3.10` and a measurement of `−3.10` are the
+same heading to within 0.083 rad the short way round, but differ by 6.20 rad if
+subtracted naively — which drives yaw hard the wrong way exactly when the
+estimate was already good. Every other `correct*()` differences a linear
+quantity and needs no such care, so copying their pattern is the bug to avoid.
+`EskfYaw.InnovationWrapsAcrossThePiSeam` pins this down at deliberately low gain
+(large `R`, small `P`); at gain ≈ 1 the wrapped and naive forms coincidentally
+land in the same place, so a confident-update test would not catch it.
+
 ---
 
 ## 4. Cross-validation (résumé bullet 1)
@@ -139,6 +167,7 @@ agreement immediately.
 | **2 ✅** | ROS node (`eskf_node`): subs `imu/data`, `odom/raw`, `gps/fix`; GPS lat/lon→local ENU; publishes `eskf/odom` (+ optional TF); ground-truth CSV logging | #1 |
 | **3 ✅** | Slip model: PyTorch trainer (+ NumPy fallback) → exported weights → dependency-free Eigen MLP (`slip_model.hpp`) → adaptive `R_leg`; 12 unit tests + C++≡NumPy slip cross-validation (~3e-16) | #2 |
 | **4 ✅** | Benchmark: ATE / RPE / drift metrics with SE(2) alignment; fixed vs adaptive vs GPS-denied scenarios; auto-generated markdown report + plots | #3 |
+| **5 ◐** | Absolute heading (`correctYaw` + magnetometer): makes the otherwise-unobservable yaw state observable. Math verified (C++≡NumPy 1.1e-15 across the ±π seam, 9 new unit tests); **not yet validated on a live walking run** — see §9 | #1 |
 
 ## 6. Phase 2 — live ROS node & sim-integration findings
 
@@ -260,3 +289,94 @@ Point the benchmark at it with `ground_truth_topic:=/ground_truth/odom`.
 
 The remaining manual step is collecting real logs from a healthy walking-sim run
 (needs working `cmd_vel`) to populate the report with on-robot numbers.
+
+## 9. Absolute heading — the magnetometer option
+
+### Why yaw needs its own sensor
+
+With GPS off, **yaw is exactly unobservable**, and no amount of `Q`/`R` tuning
+changes that. `correctLegOdom` predicts `h = Rz(−ψ)·v_world`, whose Jacobian has
+the null direction
+
+```
+δv = δψ · (−v_y, v_x)
+```
+
+Rotating heading and world velocity *together* leaves the body-frame prediction
+unchanged, so leg odometry cannot see the error — it constrains body-frame
+velocity only. `ψ` therefore runs open-loop on `∫(ω_z − b_g)dt`, and position
+error tracks yaw error 1:1 (measured: 4.3° → 2.3 m, 65° → 12.7 m over a 10 m
+square). The gyro-bias state (§1) slows that drift; it cannot stop it.
+
+Only two things break the null space: a **world-frame position/velocity anchor**
+(GPS — but only while moving) or an **absolute heading reference**, which works
+standing still. This is the latter.
+
+### Measurement model
+
+`EskfCore::correctYaw(yaw_meas, r)` — `h = ψ`, `H` a single 1 in the `PSI`
+column, wrapped innovation (§3). It is deliberately sensor-agnostic: a
+dual-antenna GNSS heading or a map-registration yaw drops into the same call.
+
+### Compass → heading
+
+`EskfNode::magCallback` converts a body-frame field into the state's ENU
+convention (`ψ = 0` is body-x-**East**):
+
+1. **Magnitude gate** — a disturbed field (hard/soft iron, a motor, steel) has a
+   wrong *direction* long before it looks wrong; `|B|` is the cheap tell-tale.
+   Off by default (`mag_norm_ref: 0`) since the right value is site-specific.
+2. **Level it** — `m_lev = Ry(θ)Rx(φ) · m_body`, reusing
+   `rotBodyToWorld(roll, pitch, 0)` rather than restating the convention. Roll
+   and pitch come from the **gravity low-pass**, not `roll_`/`pitch_`: under
+   `attitude_source: gravity_lp` those are pinned to zero, which would silently
+   disable tilt compensation on terrain. At 20°/15° tilt, skipping this costs
+   **34.8°** of heading error.
+3. **Solve** — `Rz(ψ)` maps the levelled field onto the world field, so
+
+```
+ψ = atan2(B_north, B_east) − atan2(m_lev.y, m_lev.x)
+  = (π/2 − declination) − atan2(m_lev.y, m_lev.x)
+```
+
+Declination enters here and nowhere else. It is a property of *where the robot
+is*, not of the sensor — get it from NOAA/IGRF.
+
+4. **Mount calibration** — `mag_yaw_sign` (−1 mirrors a flipped mount) then
+   `mag_yaw_offset`. `/eskf/mag_yaw` publishes the heading **pre-fusion** so
+   these can be read off against ground truth instead of guessed, exactly as
+   `eskf/gyro_bias` exposes `b_g`.
+
+The first accepted heading **seeds** `ψ` rather than correcting toward it: the
+filter starts at `ψ = 0`, and walking in a true heading of ~3 rad over several
+updates integrates position the wrong way throughout. That is an
+initialization, not a measurement.
+
+### Verification
+
+| check | result |
+|---|---|
+| Heading recovered through the full pipeline, 10 yaws × 4 tilts | **2.5e-14 °** worst error |
+| C++ (Eigen) vs independent Python implementation | identical to 1e-14 |
+| C++ ≡ NumPy twin, 762 events incl. 30 yaw updates crossing ±π | **1.055e-15** |
+| `test_eskf_core` | 25 tests pass (9 new `EskfYaw.*`) |
+| Mutation: drop the innovation wrap | exactly `InnovationWrapsAcrossThePiSeam` fails |
+
+### Usage
+
+```bash
+ros2 launch go2_eskf eskf.launch.py use_sim_time:=true use_magnetometer:=true
+ros2 topic echo /eskf/mag_yaw        # pre-fusion heading, for calibration
+```
+
+Sim support: a non-rendering `magnetometer` sensor on `imu_link`
+(`unitree_go2_gazebo.xacro`, vendored edit #3), `<magnetic_field>` pinned in
+`flat.sdf`/`terrain.sdf`, `gz-sim-magnetometer-system` in both worlds, and an
+`/imu/mag` bridge. Because it does not render, it does **not** reintroduce the
+Ogre2 segfault the cameras/LiDARs caused.
+
+**Not yet validated live.** The math is proven by the table above, but no
+walking sim run has been scored with it, and the sim magnetometer is ideal in a
+way no real one is — no hard/soft iron, no motor fields, no mount misalignment.
+Expect the first live run to need `mag_yaw_sign`/`mag_yaw_offset` calibration.
+Off by default for that reason.

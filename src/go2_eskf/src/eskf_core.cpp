@@ -166,6 +166,23 @@ void EskfCore::correctGyroBias(double bias_meas, double r) {
   josephUpdate<1>(y, H, R);
 }
 
+void EskfCore::correctYaw(double yaw_meas, double r) {
+  // h = psi (state index PSI); z = absolute heading + noise.
+  Eigen::Matrix<double, 1, kStateDim> H =
+      Eigen::Matrix<double, 1, kStateDim>::Zero();
+  H(0, PSI) = 1.0;
+  Eigen::Matrix<double, 1, 1> y, R;
+  // WRAP THE INNOVATION. psi lives on a circle, and this is the only update in
+  // the filter whose residual does. A raw difference across the +/-pi seam
+  // (meas = +3.10, state = -3.10 — 0.08 rad apart) would read as a 6.20 rad
+  // error and drive yaw the long way round, hard, exactly when the estimate was
+  // already good. Every other correct*() here differences a linear quantity and
+  // needs no such care; copying their pattern is the bug to avoid.
+  y(0) = wrapAngle(yaw_meas - x_(PSI));
+  R(0) = r;
+  josephUpdate<1>(y, H, R);
+}
+
 void EskfCore::correctVerticalVel(double vz_meas, double r) {
   // h = vz (world-frame vertical velocity), state index VX+2.
   Eigen::Matrix<double, 1, kStateDim> H =

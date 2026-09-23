@@ -226,8 +226,19 @@ with a slip-adaptive measurement-covariance model. Replaces CHAMP's stock
   odometry, which constrains body-frame velocity only. Heading is observable only through
   something that pins `v_world` in the world frame — the IMU accel (gutted by `gravity_lp`)
   or GPS position (off). So `ψ` runs open-loop on `∫(gyro_z − b_g)dt`. Only two things can
-  help: a smaller yaw-rate disturbance, or an absolute heading reference (fix the navsat
-  `<stddev>` and enable GPS, or fuse an AHRS yaw). Don't retune `Q`/`R` at it.
+  help: a smaller yaw-rate disturbance, or an absolute heading reference. Don't retune
+  `Q`/`R` at it.
+- **There is now an absolute-heading option: `use_magnetometer:=true`.** `EskfCore::correctYaw`
+  measures `ψ` directly (`H` is a single 1 in the `PSI` column), which is the only thing that
+  breaks the null space above while standing still. The sim carries a non-rendering
+  `magnetometer` sensor on `imu_link` (vendored edit #3) with `<magnetic_field>` pinned in
+  `flat.sdf`/`terrain.sdf`; `magnetic_declination` in `eskf_params.yaml` **must match that
+  field** (13.67°) or you get a constant heading bias. The innovation is angle-wrapped — the
+  only correction here that needs it; see `docs/DESIGN.md` §3 and §9. **OFF by default and
+  NOT yet validated on a live run**: the math is cross-validated (C++≡NumPy 1.1e-15 across
+  the ±π seam) but the sim magnetometer has no hard/soft iron, so expect the first real run
+  to need `mag_yaw_sign`/`mag_yaw_offset`. Calibrate against `/eskf/mag_yaw`, which publishes
+  the heading **pre-fusion** for exactly that purpose.
 - **Leg-odometry defects are best found OFFLINE.** `scripts/leg_odom_model.py` simulates a
   trot from an exactly known body twist, feeds the estimator its own inputs, and self-checks
   — no ROS, no Gazebo, zero variance. It resolved an 8% yaw-rate error and a 9% speed error

@@ -71,6 +71,23 @@ class EskfCore {
   // sensor exists.
   void correctGyroBias(double bias_meas, double r);
 
+  // Absolute heading. h = psi, so H is a single 1 in the PSI column — this is
+  // the ONLY measurement in the filter that observes yaw directly.
+  //
+  // Why it matters: without an absolute heading reference, yaw is EXACTLY
+  // unobservable here. correctLegOdom predicts h = Rz(-psi)*v_world, whose
+  // Jacobian has the null direction dv = dpsi*(-v_y, v_x) — rotating heading and
+  // world velocity together leaves the body-frame prediction unchanged, so leg
+  // odometry cannot see it. psi then runs open-loop on the integrated gyro, and
+  // position error tracks yaw error 1:1. GPS position breaks the null space too,
+  // but only while moving; this update works standing still.
+  //
+  // yaw_meas uses the state's own ENU convention: psi = 0 means the body x-axis
+  // points EAST, increasing counter-clockwise. A magnetometer heading must be
+  // converted into that convention before it is passed here (eskf_node's
+  // magCallback does it). r is the measurement variance in rad^2.
+  void correctYaw(double yaw_meas, double r);
+
   // Vertical pseudo-measurement: world-frame vertical velocity vz. On flat
   // ground the base's mean vertical velocity is ~0 (it bobs but does not
   // climb), so feeding vz_meas=0 keeps the OTHERWISE UNOBSERVABLE vertical
