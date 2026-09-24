@@ -365,6 +365,33 @@ first-party code involved.**
 - **Proposed fix:** after activation, confirm the robot is upright from `/imu/data` (gravity
   direction), then either fail fast with "FAILED TO STAND" or relaunch the sim automatically.
 
+**00:39 run (`--square --terrain --adapt --mag`) — COMPLETED; the first live run of the magnetometer
+tilt-R + gate.** 26.8 m, 0 stumbles, worst 9 s progress 21.4 cm.
+- **Estimator yaw error vs the 23:47 run (spikes)** — n = 1 each, and the mag sensor itself
+  was similar (std 3.89° vs 4.31°), so the comparison is fair-ish:
+
+  | | std | p90 | max |
+  |---|---|---|---|
+  | 23:47 (constant R) | 2.91° | 4.6° | 15.3° |
+  | **00:39 (tilt R + gate)** | **2.09°** | **3.41°** | **8.61°** |
+
+  Slip arm: 2.23 / 3.82 / 7.57°. The offline replay had predicted a max of 12.4 → 7.8°.
+- **The gate did not fire:** 0 gated, 0 forced, over 1405 fused headings.
+- **Position:** ATE mean 0.672 m (baseline) / 0.385 m (slip); final 0.360 / 0.277 m; yaw final
+  0.9° for both.
+- **Adapter pitch bias** is unchanged at **+7.24°** (open issue above).
+- **Auto-train:** the 4th run was archived (6650 rows) and deployed, retrained on 4 runs /
+  27802 rows.
+- **DESIGN FLAW in the deploy gate, found in that result:** candidate and deployed scored
+  IDENTICALLY (BCE 0.6194, corr +0.609).
+  - After any deploy, the deployed model WAS trained on exactly "all runs but the newest", so
+    the candidate (same data, same seed, same epochs) is the same network. The gate then always
+    passes, and it never evaluates the model it actually deploys (which includes the new run).
+  - It only discriminates right after a rejection.
+  - Fix: leave-one-run-out cross-validation over the whole dataset. For each run k, train on the
+    others and score on k. Compare the mean CV score against the deployed model's, or against the
+    previous dataset's CV. Costs ~N trainings (N × ~2 s).
+
 **Gotcha found on the way:** `install/` is a MERGED layout, so `colcon build --packages-select`
 without `--merge-install` refuses — and the cross-validator then silently runs the OLD binary
 (it failed at 1.456 until rebuilt, which is the check doing its job).

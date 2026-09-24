@@ -131,7 +131,7 @@ ros2 launch go2_eskf eskf.launch.py use_sim_time:=true slip:=true
 ./run_go2_teleop.sh --plot             # + ground-truth bridge + live XY/error plot
 ./run_go2_teleop.sh --software-render   # CPU (llvmpipe) rendering fallback (see gotcha below)
 
-# Live trajectory plot (clamped XY view + error-vs-time + raw leg twist). Draws FOUR
+# Live trajectory plot (clamped XY view + error-vs-time + yaw-vs-time). Draws FOUR
 # curves — ground truth, baseline estimate (/eskf/odom), slip-adaptive estimate
 # (/eskf_slip/odom), and leg odometry (/odom/raw) dead-reckoned — with one error trace
 # per non-truth curve. Needs ground_truth.launch.py for the truth overlay (--no-truth
@@ -142,14 +142,14 @@ ros2 launch go2_eskf eskf.launch.py use_sim_time:=true slip:=true
 # note below); it is the TWIST integrated in the plotter, anchored on ground truth at
 # the first sample, so it shows what leg odometry alone would give you. It is drawn
 # unscaled by default (the filter applies leg_odom_scale 1.111, so the curve runs ~10%
-# short on purpose — pass --leg-scale 1.111 to compare like for like). A third panel
-# plots the raw v_x/omega_z against the true body twist and reports the degenerate
-# (all-zero) sample share. --no-leg drops both. The window is a 2x2 grid: XY | error
-# on top, leg twist | slip score below. The slip panel plots /eskf_slip/slip_score vs
-# time (+ 2 s mean, + R_leg inflation axis); --no-slip-score drops it, --slip-lambda
-# labels the inflation axis. Switched-off panels are left out and the grid shrinks. The twist
-# panel's y-range is the central 99 % of samples, so truth omega_z spikes (up to ~500 rad/s)
-# cannot flatten it; the title counts the off-scale samples.
+# short on purpose — pass --leg-scale 1.111 to compare like for like; --no-leg drops it).
+# The third panel plots YAW vs time in unwrapped degrees — ground truth, every estimate
+# incl. the leg-odom dead-reckoning, and the raw magnetometer heading (/eskf/mag_heading,
+# once it publishes) — with each one's current error vs truth in the title. It replaced a
+# raw leg-twist panel (2026-09-24). The window is a 2x2 grid: XY | error on top, yaw | slip
+# score below. The slip panel plots /eskf_slip/slip_score vs time (+ 2 s mean, + R_leg
+# inflation axis); --no-slip-score drops it, --slip-lambda labels the inflation axis.
+# Switched-off panels are left out and the grid shrinks.
 ros2 run go2_eskf plot_trajectory.py --ros-args -p use_sim_time:=true
 ```
 
