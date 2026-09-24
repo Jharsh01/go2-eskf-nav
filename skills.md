@@ -392,6 +392,57 @@ tilt-R + gate.** 26.8 m, 0 stumbles, worst 9 s progress 21.4 cm.
     others and score on k. Compare the mean CV score against the deployed model's, or against the
     previous dataset's CV. Costs ~N trainings (N × ~2 s).
 
+**00:50 run — second boot failure in four launches: flipped onto its BACK before the square
+started.**
+- **Timeline:**
+  - spawn 436.7 s; effort controller 468.6 s (32 s limp);
+  - the adapter's complementary filter initialised from a gravity-like accel sample at 473.4 s
+    (so the robot was upright then), and at 478.4 s logged roll +0.1°, pitch-peak 6.5°;
+  - ground truth from its first sample: roll ±180°, z 0.075 m, x −0.30 m;
+  - raw accelerometer roll median **179.7°** (|f| 9.80): it really is on its back;
+  - joint error 0.7° (legs unloaded, vs ~4.5–5° when standing), zero command throughout.
+- So it stood, or was at least upright, at 473 s, and was on its back by ~483 s with no command.
+  The flip itself is in no log. The timeseries starts with ground truth; the adapter logs every
+  5 s, and its estimate is unreliable here (see below).
+- `--adapt`'s commands were ~2 mm, so it is unlikely but not ruled out. A few boots without
+  `--adapt` would settle it.
+- **Bug found — the adapter's complementary filter does not wrap the accelerometer
+  correction.** Near ±180° the accelerometer roll alternates +179.7 / −179.7, the corrections
+  cancel, and the estimate sat at ~0–6° for the whole run while truth was 180°. It also never
+  integrated the flip from the gyro. Harmless for posture (a robot on its back has none), but it
+  needs `atan2(sin, cos)` on the innovation.
+- **Shutdown:** the launcher was stopped with SIGTERM; `cleanup()` ran and the trainer skipped
+  the empty slip log. A `gz sim` process briefly outlived the cleanup and then exited, which is
+  how the 22:56 orphan could have happened.
+- **2 of the last 4 launches failed at boot.** The stand-up check (fail fast or auto-relaunch)
+  is now the most valuable fix for unattended runs.
+
+**Both fixed (same day):**
+- **`terrain_adapt.py`:** the complementary filter's accelerometer correction now uses a
+  wrapped innovation (`atan2(sin, cos)`), and roll is wrapped after each step.
+- **`stand_check.py` + in-place relaunch in `run_go2_teleop.sh`:** details in CLAUDE.md.
+  - Verified headless: an upright model reads **tilt 0.0° → UPRIGHT (exit 0)**; an upside-down
+    one reads **180.0° → NOT_UPRIGHT (exit 1)**.
+  - That test also caught a bug: a bare `--` reached argparse when the script was run without
+    `--ros-args`. It is now filtered.
+  - **End to end, forced** (`GO2_STAND_MAX_TILT=-1 --square --boot-retries 1`), three runs:
+    - **Run 1:** attempt 1 relaunched in place (PID unchanged, 1:44 elapsed across both), then
+      attempt 2 gave up: FAILED TO STAND, exit 3; `REPORT.md` shows "Boot attempt 2 of 2
+      (earlier: attempt 1 tilt 1.8deg)". **But attempt 2 measured 180.0° — a genuine flip.**
+      Teardown had not waited for the gz server, which was repeatedly seen alive seconds after
+      `cleanup()`, so attempt 2 booted alongside a dying gz on the same topics. That is a
+      plausible cause of that flip, and of the 22:56 orphan. Fixed: teardown waits up to 15 s
+      for gz, then SIGKILLs it.
+    - **Run 2** exposed a bug in that fix: unanchored `pgrep -f "gz sim"` matched any SHELL
+      whose command line contained the text. Teardown then waited 15 s on it and SIGKILLed it,
+      twice killing my own test shells. Now anchored to `'^gz sim'`.
+    - **Run 3, clean:** relaunch with no spurious wait → give up → exit 3 → **no gz left**.
+      Both boots stood (tilt 1.2°, 2.1°), and so did run 2's second attempt (2.0°) once the gz
+      wait existed.
+  - The boot flips (00:31, 00:50, run 1 attempt 2) are therefore partly unexplained. The last
+    one coincided with overlapping gz servers; the first two did not, since each was a fresh
+    launch.
+
 **Gotcha found on the way:** `install/` is a MERGED layout, so `colcon build --packages-select`
 without `--merge-install` refuses — and the cross-validator then silently runs the OLD binary
 (it failed at 1.456 until rebuilt, which is the check doing its job).

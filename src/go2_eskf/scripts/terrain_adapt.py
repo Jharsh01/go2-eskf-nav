@@ -225,14 +225,17 @@ class TerrainAdapt(Node):
             # over 10 s. Measured on a synthetic static tilt: max error 1.42 -> see
             # skills.md §0.
             k = dt / (min(self.cf_tau, self.cf_age) + dt)
-            roll += k * (ar - roll)
-            pitch += k * (ap - pitch)
+            # WRAPPED innovation. Unwrapped, a robot on its back (accel roll
+            # alternating +179.7 / -179.7 deg) produced cancelling corrections and the
+            # estimate sat at ~0 deg while truth was 180 (00:50 run, skills.md §0).
+            roll += k * math.atan2(math.sin(ar - roll), math.cos(ar - roll))
+            pitch += k * math.atan2(math.sin(ap - pitch), math.cos(ap - pitch))
             self.innov_sum += abs(ap - pitch)
             self.innov_n += 1
             self.n_imu += 1
         else:
             self.n_rejected += 1
-        self.cf = [roll, pitch]
+        self.cf = [math.atan2(math.sin(roll), math.cos(roll)), pitch]
         self.cf_age += dt
 
         # The posture follows the slope, not the stride: low-pass what drives it.

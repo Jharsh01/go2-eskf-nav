@@ -29,6 +29,7 @@
 #   ./run_go2_teleop.sh --climb            # = --terrain --adapt --stiff
 #   ./run_go2_teleop.sh --no-report        # skip the run_report/ snapshot
 #   ./run_go2_teleop.sh --no-train         # don't retrain the slip model after the run
+#   ./run_go2_teleop.sh --boot-retries 0   # fail fast if the Go2 does not stand (default: 2 relaunches)
 #   ./run_go2_teleop.sh --no-slip          # only ONE estimator (no slip-adaptive arm)
 #   ./run_go2_teleop.sh --no-gps           # drop /gps/fix (GPS is fused by DEFAULT)
 #   ./run_go2_teleop.sh --mag              # + magnetometer heading (both arms; off by default)
@@ -131,6 +132,12 @@ SQUARE_TIMEOUT="300"
 # Captured BEFORE parsing: the loop below shifts "$@" away, and REPORT.md's
 # "Command line" row is the only record of what a run was actually asked to do.
 ALL_ARGS="$*"
+ORIG_ARGS=("$@")            # verbatim, for the in-place relaunch after a failed stand-up
+# Boot attempts. A failed stand-up re-execs this script with the same arguments;
+# the attempt number and the history of failures ride along in the environment.
+BOOT_RETRIES="2"            # --boot-retries N: relaunches after a failed stand-up (0 = fail fast)
+BOOT_ATTEMPT="${GO2_BOOT_ATTEMPT:-1}"
+BOOT_HISTORY="${GO2_BOOT_HISTORY:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -151,6 +158,8 @@ while [[ $# -gt 0 ]]; do
     --no-slip)          SLIP="false" ;;       # only the baseline (fixed-R) estimator
     --no-report)        REPORT="false" ;;     # skip the run_report/ snapshot
     --no-train)         TRAIN="false" ;;      # don't retrain the slip model afterwards
+    --boot-retries)     shift; BOOT_RETRIES="${1:-}" ;;
+    --boot-retries=*)   BOOT_RETRIES="${1#*=}" ;;
     --software-render)  RENDER="software" ;;
     --light|--lite)     RVIZ="false"; PLOT_INTERVAL="0.2" ;;  # lowest load
     # Both spellings, so it works in a script and by hand.
@@ -167,6 +176,9 @@ done
   echo "ERROR: --timeout wants whole seconds, got '$TIMEOUT'" >&2; exit 1; }
 # --square arms the cap unless the user set one explicitly (or opted out).
 [[ "$SQUARE" == "true" && "$TIMEOUT" == "0" ]] && TIMEOUT="$SQUARE_TIMEOUT"
+[[ "$BOOT_RETRIES" =~ ^[0-9]+$ ]] || {
+  echo "ERROR: --boot-retries wants a whole number, got '$BOOT_RETRIES'" >&2; exit 1; }
+BOOT_MAX=$(( BOOT_RETRIES + 1 ))
 
 # `nice`/`ionice` prefix for non-realtime helpers (plot, bridges) so the sim and
 # controllers win CPU during the busy boot — that's what was starving the
@@ -278,7 +290,7 @@ SOURCE_ENV="source '$ROS_SETUP' && source '$WS/install/setup.bash'"
 WAIT_READY="echo 'Waiting for ros2_control to activate the leg controller (~30 s)...'; \
   until timeout 5 ros2 control list_controllers 2>/dev/null \
         | grep -q 'joint_group_effort_controller.*active'; do sleep 2; done; \
-  echo 'Leg controller ACTIVE — the Go2 is standing.'"
+  echo 'Leg controller ACTIVE (stand_check.py confirms the Go2 is upright ~15 s later).'"
 LOGDIR="$(mktemp -d /tmp/go2_teleop.XXXXXX)"
 declare -a PIDS=()   # process-group leaders of everything we start in the bg
 
@@ -291,9 +303,9 @@ start_bg() {  # $1 = name, $2 = command
 }
 
 # --- teardown -------------------------------------------------------------
-cleanup() {
-  trap '' INT TERM EXIT   # no re-entry
-  set +e
+# Stop everything this run started and keep its logs. Shared by cleanup() (the real
+# exit) and the in-place relaunch after a failed stand-up, which must not exit.
+teardown() {
   echo; echo "Shutting down the Go2 stack..."
   # FIRST, before anything is signalled: preserve the per-node stdout that $LOGDIR is
   # about to lose. run_report.py mines it for WARN/ERROR lines on its way out, and this
@@ -312,6 +324,25 @@ cleanup() {
   # which closes the window.
   for pid in "${PIDS[@]}"; do kill -KILL -- "-$pid" 2>/dev/null; done
   pkill -KILL -f teleop_twist_keyboard 2>/dev/null
+  # The gz server is NOT reliably in the process groups above: it was seen alive
+  # several seconds after this point more than once, and one outlived its run by an
+  # hour (22:56). Wait for it, then force it — otherwise a relaunch boots a second gz
+  # alongside the dying one, on the same topics.
+  # Anchored: only processes whose command line STARTS with "gz sim". Unanchored,
+  # "gz sim" also matched any shell whose command line merely contained that text,
+  # so teardown waited on (and then SIGKILLed) an unrelated shell.
+  for _ in $(seq 15); do pgrep -f '^gz sim' >/dev/null || break; sleep 1; done
+  if pgrep -f '^gz sim' >/dev/null; then
+    echo "  gz still up after 15 s — killing it."
+    pkill -KILL -f '^gz sim' 2>/dev/null; sleep 1
+  fi
+  rm -rf "$LOGDIR"
+}
+
+cleanup() {  # $1 = exit code (default 0)
+  trap '' INT TERM EXIT   # no re-entry
+  set +e
+  teardown
   # Retrain the slip model on this run's data, now that every node has stopped and
   # the log is closed. auto_train_slip.py archives the rows to slip_dataset/,
   # evaluates a candidate on this run (held out), deploys only if it is not worse,
@@ -326,10 +357,9 @@ cleanup() {
       || echo "  slip training FAILED — see $REPORT_DIR/slip_training.log"
     sed -n '/## Slip model training/,$p' "$REPORT_DIR/slip_training.log"
   fi
-  rm -rf "$LOGDIR"
   [[ "$REPORT" == "true" ]] && echo "Run report: $REPORT_DIR/REPORT.md"
   echo "Done."
-  exit 0
+  exit "${1:-0}"
 }
 trap cleanup INT TERM
 
@@ -361,6 +391,7 @@ if [[ "$REPORT" == "true" ]]; then
     echo "Slip arm: $SLIP"
     echo "GPS fused: $USE_GPS"
     echo "Magnetometer fused: $USE_MAG"
+    echo "Boot attempt: $BOOT_ATTEMPT of $BOOT_MAX${BOOT_HISTORY:+ (earlier: $BOOT_HISTORY)}"
     echo "Failsafe timeout: $( ((TIMEOUT>0)) && echo "${TIMEOUT}s" || echo "off" )"
     echo "Rendering: $RENDER"
     echo "Gait: $(sed -n 's/^ *\(swing_height\|nominal_height\|stance_duration\|max_linear_velocity_x\) *: *\(.*\)/\1=\2/p' \
@@ -376,6 +407,16 @@ echo
 start_bg sim \
   "$RENDER_ENV ros2 launch unitree_go2_sim unitree_go2_launch.py use_sim_time:=true rviz:=$RVIZ world:='$WORLD' $STIFF_ARG"
 SIM_PID=$REPLY
+
+# --- 1a. Stand-up check ---------------------------------------------------
+# The controller going active does NOT mean the robot stood: on 2026-09-24 two of
+# four launches ended on its side / back before any command. stand_check.py waits
+# 15 s of sim time after activation (long enough to catch one that stands and then
+# tips over) and prints STAND_CHECK UPRIGHT|NOT_UPRIGHT; the supervisor acts on it.
+start_bg standcheck \
+  "$WAIT_READY; nice -n 5 python3 '$WS/src/go2_eskf/scripts/stand_check.py' \
+     --ros-args -p use_sim_time:=true -- --settle 15 --max-tilt ${GO2_STAND_MAX_TILT:-45}"
+# (GO2_STAND_MAX_TILT is a TEST hook: -1 fails every stand check, to exercise the relaunch.)
 
 # --- 1b. Slope-adaptive body posture (optional) ---------------------------
 # CHAMP never publishes /body_pose, so its foot plane is fixed in the base frame and
@@ -532,8 +573,30 @@ note_outcome() {  # $1 = one-line outcome for REPORT.md
   echo "$1"
   [[ "$REPORT" == "true" ]] && echo "$1" > "$REPORT_DIR/outcome.txt"
 }
+STAND_SEEN="false"
 while true; do
   sleep 5 & wait $!
+  # Failed stand-up: relaunch in place (same PID, so Ctrl-C / kill -TERM keep working),
+  # or give up once the attempts are spent.
+  if [[ "$STAND_SEEN" == "false" ]]; then
+    STAND_LINE=$(grep -m1 "^STAND_CHECK" "$LOGDIR/standcheck.log" 2>/dev/null)
+    if [[ "$STAND_LINE" == *" UPRIGHT"* ]]; then
+      echo "Stand check: ${STAND_LINE#STAND_CHECK } — the Go2 is standing."
+      STAND_SEEN="true"
+    elif [[ "$STAND_LINE" == *"NOT_UPRIGHT"* ]]; then
+      TILT="${STAND_LINE##*tilt=}"
+      if (( BOOT_ATTEMPT < BOOT_MAX )); then
+        note_outcome "Run outcome: **FAILED TO STAND** (tilt $TILT) on boot attempt $BOOT_ATTEMPT of $BOOT_MAX — relaunching."
+        teardown
+        export GO2_BOOT_ATTEMPT=$(( BOOT_ATTEMPT + 1 ))
+        export GO2_BOOT_HISTORY="${BOOT_HISTORY:+$BOOT_HISTORY; }attempt $BOOT_ATTEMPT tilt $TILT"
+        echo "Relaunching (attempt $GO2_BOOT_ATTEMPT of $BOOT_MAX)..."
+        exec "$WS/$(basename "$0")" "${ORIG_ARGS[@]}"
+      fi
+      note_outcome "Run outcome: **FAILED TO STAND** (tilt $TILT) on all $BOOT_MAX boot attempt(s) — giving up."
+      cleanup 3
+    fi
+  fi
   if [[ "$SQUARE" == "true" ]] && \
      grep -q "SQUARE DRIFT SUMMARY" "$LOGDIR/square.log" 2>/dev/null; then
     sleep 5 & wait $!          # let run_report catch the last samples

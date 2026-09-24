@@ -405,6 +405,16 @@ uses a 0.25 s low-passed truth heading; a stall is judged by the maximum excursi
 condition pauses the square and it resumes once the robot is settled for 1 s, aborting only if the
 condition persists 0.5 s or it has not settled in 5 s. `-- --no-shaping` restores step commands.
 
+**The launcher checks that the Go2 actually stood up, and relaunches if not** (2026-09-24).
+Two of four boots that night ended on the robot's side/back before any command, and the stack
+sat until the 300 s cap. `scripts/stand_check.py` waits 15 s of sim time after the leg controller
+activates, averages the accelerometer, and reports the body tilt (upright < 45°). On failure the
+supervisor tears the stack down and `exec`s the launcher again with the same arguments (same PID,
+so Ctrl-C / `kill -TERM` still work); `--boot-retries N` (default 2; 0 = fail fast) bounds it,
+after which the outcome is **FAILED TO STAND** and the exit code 3. `REPORT.md`'s config table
+shows the boot attempt and earlier failures. `GO2_STAND_MAX_TILT=-1` is a test hook that fails
+every check.
+
 **Runs stop themselves.** `run_go2_teleop.sh` supervises two automatic exits: the square's
 drift summary appearing, and a `--timeout SEC` wall-clock cap — **300 s by default under
 `--square`**, sized for the 5 m route (~185 s end to end, ~90 s of it boot). A 10 m route
