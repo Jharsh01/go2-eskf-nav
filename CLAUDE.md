@@ -33,6 +33,10 @@ colcon build --packages-select go2_eskf --symlink-install
 # Clean rebuild
 rm -rf build install log && colcon build --symlink-install
 
+# NOTE: the existing install/ uses the MERGED layout, so single-package builds need
+# --merge-install or colcon refuses — and then any test run silently uses the OLD binary.
+colcon build --packages-select go2_eskf --symlink-install --merge-install
+
 # Source workspace (required before running nodes)
 source install/setup.bash
 ```
@@ -97,13 +101,16 @@ ros2 launch motion_planner hardware_demo.launch.py
 # Bring up the Go2 Gazebo sim (CHAMP stack)
 ros2 launch unitree_go2_sim unitree_go2_launch.py            # add rviz:=true for RViz
 
-# Run the error-state EKF against the sim. GPS is OFF by default: the world has a
-# <spherical_coordinates> datum (so the /gps/fix MEAN is right), but the Gazebo
-# navsat emits ~0.5 deg (~55 km) of position NOISE — its <stddev>0.5</stddev> is
-# applied in degrees, not metres — so fusing it wrecks the estimate. Enable only
-# with a real/fixed GPS. use_gps is a launch arg.
-ros2 launch go2_eskf eskf.launch.py use_sim_time:=true                # GPS off (default)
-ros2 launch go2_eskf eskf.launch.py use_sim_time:=true use_gps:=true  # only if navsat is fixed
+# Run the error-state EKF against the sim. The navsat sensor is FIXED (2026-08-28):
+# its <stddev> was applied in DEGREES, not metres, so 0.5 meant ~55 km of scatter.
+# It is now written in metres and converted at the datum (unitree_go2_gazebo.xacro),
+# and MEASURED at 0.54 m N/S, 0.49 m E/W on a stationary robot. GPS is therefore
+# safe to fuse, so it is now ON BY DEFAULT (2026-09-04): the filter fuses
+# IMU + leg odometry + GPS. use_gps is still a launch arg, so the old
+# leg-odom-only behaviour is one flag away (and it is what every pre-2026-09-04
+# drift number in skills.md / CLAUDE.md was measured under).
+ros2 launch go2_eskf eskf.launch.py use_sim_time:=true                 # GPS on (default)
+ros2 launch go2_eskf eskf.launch.py use_sim_time:=true use_gps:=false  # leg odom + IMU only
 
 # Run BOTH estimator arms at once against the same sensor stream: the baseline
 # (fixed R_leg -> /eskf/odom) and the slip-adaptive one (use_slip_model -> /eskf_slip/odom).
@@ -124,11 +131,25 @@ ros2 launch go2_eskf eskf.launch.py use_sim_time:=true slip:=true
 ./run_go2_teleop.sh --plot             # + ground-truth bridge + live XY/error plot
 ./run_go2_teleop.sh --software-render   # CPU (llvmpipe) rendering fallback (see gotcha below)
 
-# Live trajectory plot (clamped XY view + error-vs-time). Draws THREE curves —
-# ground truth, baseline estimate (/eskf/odom), slip-adaptive estimate (/eskf_slip/odom) —
-# with one error trace per estimator arm. Needs ground_truth.launch.py for the truth
-# overlay (--no-truth otherwise) and eskf.launch.py slip:=true for the third curve
-# (--no-slip, or --wait-slip N to drop it from the legend if it never publishes).
+# Live trajectory plot (clamped XY view + error-vs-time + raw leg twist). Draws FOUR
+# curves — ground truth, baseline estimate (/eskf/odom), slip-adaptive estimate
+# (/eskf_slip/odom), and leg odometry (/odom/raw) dead-reckoned — with one error trace
+# per non-truth curve. Needs ground_truth.launch.py for the truth overlay (--no-truth
+# otherwise) and eskf.launch.py slip:=true for the slip curve (--no-slip, or
+# --wait-slip N to drop it from the legend if it never publishes).
+#
+# The /odom/raw curve is NOT its pose field (that one is meaningless — see the CHAMP
+# note below); it is the TWIST integrated in the plotter, anchored on ground truth at
+# the first sample, so it shows what leg odometry alone would give you. It is drawn
+# unscaled by default (the filter applies leg_odom_scale 1.111, so the curve runs ~10%
+# short on purpose — pass --leg-scale 1.111 to compare like for like). A third panel
+# plots the raw v_x/omega_z against the true body twist and reports the degenerate
+# (all-zero) sample share. --no-leg drops both. The window is a 2x2 grid: XY | error
+# on top, leg twist | slip score below. The slip panel plots /eskf_slip/slip_score vs
+# time (+ 2 s mean, + R_leg inflation axis); --no-slip-score drops it, --slip-lambda
+# labels the inflation axis. Switched-off panels are left out and the grid shrinks. The twist
+# panel's y-range is the central 99 % of samples, so truth omega_z spikes (up to ~500 rad/s)
+# cannot flatten it; the title counts the off-scale samples.
 ros2 run go2_eskf plot_trajectory.py --ros-args -p use_sim_time:=true
 ```
 
@@ -187,7 +208,25 @@ with a slip-adaptive measurement-covariance model. Replaces CHAMP's stock
   GPS corrections, lat/lon→ENU conversion, ground-truth CSV logging.
 - `scripts/eskf_reference.py` — line-for-line NumPy twin; `cross_validate.py` compares it
   to the C++ core. `tools/replay_eskf.cpp` is the deterministic replay driver.
-- Tests: `test_eskf_core` (16 GTest cases)
+- Tests: `test_eskf_core` (22 GTest cases)
+- **Magnetometer heading (2026-09-23), OFF by default — `use_mag:=true` / `./run_go2_teleop.sh --mag`.**
+  `EskfCore::correctYaw` (direct ψ update, wrapped innovation) fed by `EskfCore::magHeading`
+  (vector tilt compensation: field + low-passed accelerometer "up", both in the IMU frame, so
+  the flipped sim-IMU frame is irrelevant). The gz magnetometer sits on `imu_link` (third
+  deliberate vendored edit, additive, in `unitree_go2_gazebo.xacro`); `eskf.launch.py` bridges
+  it (`/imu/mag`), and the raw heading is published on `/eskf/mag_heading` for checking against
+  truth. Measured on a headless gz world: with `<spherical_coordinates>` set, gz uses its **WMM
+  field in GAUSS** (|B| 0.433, 4.0° from world +x) and ignores the SDF `<magnetic_field>`
+  default, and the noise `<stddev>` is in gauss too; heading recovered yaw to 0.000° at four
+  poses incl. an upside-down mount. Default reference is calibrated at startup against the
+  filter's initial yaw (`mag_calibrate_heading`). Offline it beats GPS alone on the square
+  (2.00°→0.61°) **only if** the gait's tilt-compensation error is ≲5°; at 10° it is worse —
+  measure `/eskf/mag_heading` vs `/ground_truth/odom` yaw on a walking run before enabling it.
+  MEASURED since (2026-09-23/24): std 4.1–4.3° on terrain squares, heavy-tailed — the error grows
+  with the body's tilt LAG behind the low-passed "up", so R is now tilt-dependent
+  (`mag_tilt_gain` 0.60, from a fit) with a 3σ innovation gate (`mag_gate_sigma`) and a 5 s
+  lock-out escape. Still not A/B'd (`--mag` vs none) —
+  `REPORT.md`'s "Magnetometer heading vs ground truth" section does exactly that (`--mag` + `--square`/`--plot`).
 - **Slip model (Phase 3): trained on REAL run data, end to end.** `eskf_node` taps a
   training set at exactly the point inference runs — `slip_log:=<csv>` writes one row per
   *fused* leg-odom update (post-scale, post-gate, ZUPT rows excluded) with the eight
@@ -217,8 +256,10 @@ with a slip-adaptive measurement-covariance model. Replaces CHAMP's stock
   sim-integration gotchas (unreliable gz-IMU orientation → `gravity_lp` attitude default;
   contact-impact accel spikes → large `accel_noise` so leg odometry dominates; the world has
   a `<spherical_coordinates>` datum so the `/gps/fix` mean is correct, BUT the Gazebo navsat
-  emits ~0.5° (~55 km) of position noise — its `<stddev>0.5</stddev>` is applied in degrees,
-  not metres — so GPS is OFF by default (fusing it wrecks the estimate); no sim ground-truth
+  emitted ~0.5° (~55 km) of position noise — its `<stddev>0.5</stddev>` was applied in degrees,
+  not metres — **fixed 2026-08-28**, now 0.5 m nominal and measured at 0.54/0.49 m, so GPS is
+  fusable and is ON by default since 2026-09-04 (`use_gps:=false` restores the old
+  leg-odom-only arm); no sim ground-truth
   Odometry → use `ground_truth.launch.py`). With GPS off, position is unobservable and drifts
   slowly on leg odometry — that is expected in sim; the GPS path is validated by the replay /
   NumPy cross-checks, not the live sim.
@@ -246,6 +287,19 @@ with a slip-adaptive measurement-covariance model. Replaces CHAMP's stock
   square run** — budget ~5+ runs per arm, and relaunch the sim per run (a `gz` world
   reset wedges `controller_manager`). No filter change to date is proven to help. Read
   `skills.md` §0 before touching the yaw path or quoting a drift number.
+- **GPS is a working sensor again (2026-08-28), and it is the ONLY absolute heading
+  reference in this stack.** The navsat `<stddev>` unit bug is fixed in
+  `unitree_go2_gazebo.xacro` (a deliberate vendored edit, additive: `gps_noise_m` in metres, converted
+  by metres-per-degree at the datum); measured on a stationary robot over 400 fixes at
+  **0.542 m N/S, 0.491 m E/W**, altitude 0.805 m (vertical was never affected — altitude is
+  natively metres). The ENU datum is now the **average of the first `gps_datum_samples: 10`
+  fixes**, not one; datum noise is a constant offset on every position the filter reports and
+  is the one GPS error later fusion cannot average away. It is fused BY DEFAULT since
+  2026-09-04 (`use_gps: true` in `eskf_params.yaml`, `use_gps` default `true` in
+  `eskf.launch.py`, `USE_GPS=true` in `run_go2_teleop.sh`); `./run_go2_teleop.sh --no-gps`
+  goes back to leg odom + IMU only. **Not yet A/B'd on a square** — per §0's own rule, budget ~5+
+  runs per arm before quoting a number, and note `run_report/timeseries.csv` has no GPS
+  columns yet, so GPS quality is currently invisible in `REPORT.md`.
 - **With GPS off, yaw is EXACTLY unobservable — no filter tuning can fix heading drift.**
   `correctLegOdom` predicts `h = Rz(-ψ)·v_world`, whose Jacobian has the null direction
   `δv = δψ·(-v_y, v_x)`: rotating heading and world velocity together is invisible to leg
@@ -327,11 +381,18 @@ regardless of how many runs happen. `run_report/` is gitignored.
 | file | contents |
 |------|----------|
 | `REPORT.md` | config (flags/world/gains/gait), outcome + **stall detector** (where progress stopped while still commanded), terrain elevation & slope under the ground-truth path, gait health (per-leg contact duty, **joint tracking error** = the stance-sag metric, leg-odom degenerate %), estimator ATE/final/yaw error **with one column per estimator arm** (baseline vs slip-adaptive), topic rates with **MISSING topics flagged**, and de-duplicated WARN/ERROR lines from every node |
-| `timeseries.csv` | 29-column merged series at 5 Hz, hard row cap (decimates itself on overflow) |
+| `timeseries.csv` | merged series at 5 Hz, hard row cap (decimates itself on overflow); last two columns `mag_heading`/`mag_err` are empty unless `--mag` |
 | `context.txt` | launcher flags/world/gains (written by the shell) |
 | `node_logs/` | per-node stdout, copied by `cleanup()` **before** it deletes its scratch dir — otherwise this is lost |
 | `slip_features.csv` | slip-model training set (~2 MB), written when the ground-truth bridge is up. Feed to `train_slip_model.py --runlog` |
 | `outcome.txt` | how the run ENDED (`square test COMPLETE` / `FAILSAFE TIMEOUT after Ns`), written by the launcher just before teardown; `REPORT.md` reproduces it under **Outcome** |
+
+**`square_test.py` ramps its commands and survives stumbles** (2026-09-23): `cmd_vx`/`cmd_wz` are
+rate-limited on SPEED-UP only (0→0.25 m/s over 2 s; slowing/stopping is immediate) and steering
+uses a 0.25 s low-passed truth heading; a stall is judged by the maximum excursion over the window
+(so circling a corner is not a stall); a fall
+condition pauses the square and it resumes once the robot is settled for 1 s, aborting only if the
+condition persists 0.5 s or it has not settled in 5 s. `-- --no-shaping` restores step commands.
 
 **Runs stop themselves.** `run_go2_teleop.sh` supervises two automatic exits: the square's
 drift summary appearing, and a `--timeout SEC` wall-clock cap — **300 s by default under
@@ -370,7 +431,7 @@ switchable fixes exist; **neither is validated in sim yet**:
 
 | flag | what it does |
 |------|--------------|
-| `--adapt` | runs `scripts/terrain_adapt.py`, which publishes `/body_pose`: shifts the body uphill (`com_shift_x`), crouches on slopes (`crouch`), and optionally levels the body against the ground (`level_pitch`, default 0 = stock). Attitude comes from a low-passed accelerometer, not the gz IMU orientation (unreliable) or the ESKF (yaw-only). All gains 0 ⇒ bit-for-bit stock. |
+| `--adapt` | **Pitch sign FIXED 2026-09-23** — before that `com_shift_x` shifted the CoM DOWNHILL on every slope (`skills.md` §0), so no earlier `--adapt` result is valid. Runs `scripts/terrain_adapt.py`, which publishes `/body_pose`: shifts the body uphill (`com_shift_x`), crouches on slopes (`crouch`), and optionally levels the body against the ground (`level_pitch`, default 0 = stock). Attitude comes from a **gyro + accelerometer complementary filter** (`attitude_mode: complementary`, default since 2026-09-23; `cf_tau` 10 s; `accel` = the old accel-only low-pass, which read a spurious 19° at gait start), not the gz IMU orientation (unreliable) or the ESKF (yaw-only). It publishes `/terrain_adapt/pitch`, which `REPORT.md` scores against truth. All gains 0 ⇒ bit-for-bit stock. |
 | `--stiff` | points the launch's `ros_control_file` arg at `go2_eskf/config/ros_control_stiff.yaml` (p 100→300, d 1.0→3.5). The stock effort-mode PID gives away ~3 cm of stance sag under the 15.1 kg robot — stroke the climb never gets. Actuators have 2.4× headroom and gz ignores URDF command limits, so the torque is really applied. Vendored `ros_control.yaml` untouched. |
 
 `--climb` is shorthand for `--terrain --adapt --stiff`. A/B them **one at a time**.

@@ -7,6 +7,7 @@
 //   type 0 = IMU predict   uses dt,a0..a2,gz,roll,pitch
 //   type 1 = leg odometry  uses m0,m1 (body vx,vy)
 //   type 2 = GPS           uses m0,m1 (world x,y)
+//   type 3 = heading       uses m0    (yaw, e.g. from the magnetometer)
 // output.csv rows: the 8 nominal-state values after each processed event.
 //
 // The measurement covariances below MUST match scripts/eskf_reference.py.
@@ -23,6 +24,7 @@
 namespace {
 const Eigen::Matrix2d kLegR = (Eigen::Matrix2d() << 0.04, 0, 0, 0.04).finished();
 const Eigen::Matrix2d kGpsR = (Eigen::Matrix2d() << 0.25, 0, 0, 0.25).finished();
+constexpr double kYawR = 0.05 * 0.05;
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -57,6 +59,8 @@ int main(int argc, char** argv) {
       eskf.correctLegOdom(Eigen::Vector2d(f[8], f[9]), kLegR);
     } else if (type == 2) {
       eskf.correctGps(Eigen::Vector2d(f[8], f[9]), kGpsR);
+    } else if (type == 3) {
+      eskf.correctYaw(f[8], kYawR);
     }
     const auto& x = eskf.state();
     for (int i = 0; i < go2_eskf::kStateDim; ++i) {

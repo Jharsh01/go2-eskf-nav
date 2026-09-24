@@ -67,7 +67,6 @@ class StateEstimation: public rclcpp::Node
     rclcpp::Publisher<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr base_to_footprint_publisher_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr foot_publisher_;
     
-
     std::unique_ptr<tf2_ros::TransformBroadcaster> base_broadcaster_;
     
     rclcpp::TimerBase::SharedPtr odom_data_timer_;
@@ -80,11 +79,9 @@ class StateEstimation: public rclcpp::Node
     float x_pos_;
     float y_pos_;
     float heading_;
-
     rclcpp::Time last_vel_time_;
     rclcpp::Time last_sync_time_;
-    rclcpp::Clock clock_;
-    
+    rclcpp::Clock clock_;   
     sensor_msgs::msg::Imu::SharedPtr last_imu_;
 
     champ::GaitConfig gait_config_;

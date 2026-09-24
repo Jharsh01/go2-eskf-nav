@@ -177,6 +177,43 @@ void EskfCore::correctVerticalVel(double vz_meas, double r) {
   josephUpdate<1>(y, H, R);
 }
 
+void EskfCore::correctYaw(double psi_meas, double r) {
+  // h = psi (state index PSI). The innovation is wrapped: psi lives on a circle,
+  // and an unwrapped 3.1 - (-3.1) = 6.2 rad residual would spin the estimate
+  // the long way round.
+  Eigen::Matrix<double, 1, kStateDim> H =
+      Eigen::Matrix<double, 1, kStateDim>::Zero();
+  H(0, PSI) = 1.0;
+  Eigen::Matrix<double, 1, 1> y, R;
+  y(0) = wrapAngle(psi_meas - x_(PSI));
+  R(0) = r;
+  josephUpdate<1>(y, H, R);
+}
+
+bool EskfCore::magHeading(const Eigen::Vector3d& mag_sensor,
+                          const Eigen::Vector3d& up_sensor,
+                          double field_heading, double* psi) {
+  const double up_n = up_sensor.norm();
+  const double mag_n = mag_sensor.norm();
+  if (up_n < 1e-9 || mag_n < 1e-12) return false;
+  const Eigen::Vector3d u = up_sensor / up_n;
+
+  // Project the field and the sensor's forward axis onto the horizontal plane.
+  const Eigen::Vector3d m_h = mag_sensor - mag_sensor.dot(u) * u;
+  const Eigen::Vector3d fwd = Eigen::Vector3d::UnitX();
+  const Eigen::Vector3d f_h = fwd - fwd.dot(u) * u;
+  // Near-vertical field (magnetic pole) or forward axis (robot on its nose):
+  // the horizontal projection is noise, so there is no heading to report.
+  if (m_h.norm() < 1e-3 * mag_n || f_h.norm() < 0.1) return false;
+
+  // Signed angle from the horizontal field to the horizontal forward axis,
+  // measured about up. Level check: m_body = Rz(-psi) m_world, so this angle is
+  // psi - field_heading.
+  const double rel = std::atan2(u.dot(m_h.cross(f_h)), m_h.dot(f_h));
+  *psi = wrapAngle(field_heading + rel);
+  return true;
+}
+
 // Explicit instantiations.
 template void EskfCore::josephUpdate<2>(
     const Eigen::Matrix<double, 2, 1>&,

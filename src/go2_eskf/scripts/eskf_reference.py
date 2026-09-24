@@ -18,6 +18,7 @@ PX, PY, PZ, VX, VY, VZ, PSI, BG = range(8)
 # Measurement covariances — MUST match tools/replay_eskf.cpp.
 LEG_R = np.diag([0.04, 0.04])
 GPS_R = np.diag([0.25, 0.25])
+YAW_R = 0.05 ** 2
 
 
 def wrap_angle(a):
@@ -121,6 +122,32 @@ class EskfReference:
         h = self.x[PX:PY + 1]
         self._joseph_update(pos_xy - h, H, R)
 
+    def correct_yaw(self, psi_meas, r=YAW_R):
+        """Direct heading measurement (magnetometer/AHRS); wrapped innovation.
+        Mirrors EskfCore::correctYaw."""
+        H = np.zeros((1, 8))
+        H[0, PSI] = 1.0
+        y = np.array([wrap_angle(psi_meas - self.x[PSI])])
+        self._joseph_update(y, H, np.array([[r]]))
+
+
+def mag_heading(mag_sensor, up_sensor, field_heading):
+    """Tilt-compensated magnetometer heading. Mirrors EskfCore::magHeading;
+    returns None where the C++ returns false (degenerate geometry)."""
+    mag_sensor = np.asarray(mag_sensor, dtype=float)
+    up_sensor = np.asarray(up_sensor, dtype=float)
+    up_n, mag_n = np.linalg.norm(up_sensor), np.linalg.norm(mag_sensor)
+    if up_n < 1e-9 or mag_n < 1e-12:
+        return None
+    u = up_sensor / up_n
+    m_h = mag_sensor - mag_sensor.dot(u) * u
+    fwd = np.array([1.0, 0.0, 0.0])
+    f_h = fwd - fwd.dot(u) * u
+    if np.linalg.norm(m_h) < 1e-3 * mag_n or np.linalg.norm(f_h) < 0.1:
+        return None
+    rel = np.arctan2(u.dot(np.cross(m_h, f_h)), m_h.dot(f_h))
+    return wrap_angle(field_heading + rel)
+
 
 def run_csv(input_csv, output_csv):
     """Replay an input stream and dump the state after every event."""
@@ -135,12 +162,18 @@ def run_csv(input_csv, output_csv):
             f.correct_leg_odom(r[8:10])
         elif t == 2:
             f.correct_gps(r[8:10])
+        elif t == 3:
+            f.correct_yaw(r[8])
         rows.append(f.x.copy())
     np.savetxt(output_csv, np.array(rows), delimiter=",", fmt="%.17g")
 
 
-def generate_input(path, n=600, seed=0):
-    """Write a deterministic, plausible sensor stream for cross-validation."""
+def generate_input(path, n=600, seed=0, with_yaw=False):
+    """Write a deterministic, plausible sensor stream for cross-validation.
+
+    with_yaw adds heading measurements (type 3) at 10 Hz. It is a separate
+    stream, not a change to the default one, so the original IMU/leg/GPS
+    stream stays exactly the regression it always was."""
     rng = np.random.default_rng(seed)
     dt = 0.01
     lines = ["type,dt,a0,a1,a2,gz,roll,pitch,m0,m1"]
@@ -150,6 +183,10 @@ def generate_input(path, n=600, seed=0):
         ay = 0.15 * np.cos(0.2 * t) + 0.02 * rng.standard_normal()
         az = GRAVITY + 0.02 * rng.standard_normal()
         gz = 0.2 * np.sin(0.1 * t)
+        if with_yaw:
+            # Spin fast enough that yaw crosses the +-pi seam (at t ~ 2.6 s),
+            # so the wrapped heading innovation is actually exercised.
+            gz += 1.2
         roll = 0.03 * np.sin(0.5 * t)
         pitch = 0.05 * np.cos(0.4 * t)
         lines.append(f"0,{dt},{ax:.17g},{ay:.17g},{az:.17g},{gz:.17g},"
@@ -162,6 +199,10 @@ def generate_input(path, n=600, seed=0):
             gx = 0.25 * t + 0.1 * rng.standard_normal()
             gy = 0.05 * t + 0.1 * rng.standard_normal()
             lines.append(f"2,0,0,0,0,0,0,0,{gx:.17g},{gy:.17g}")
+        if with_yaw and k % 10 == 0:  # heading at 10 Hz
+            true_psi = 1.2 * t + 2.0 * (1.0 - np.cos(0.1 * t))  # integral of gz
+            pm = wrap_angle(true_psi + 0.03 * rng.standard_normal())
+            lines.append(f"3,0,0,0,0,0,0,0,{pm:.17g},0")
     with open(path, "w") as fh:
         fh.write("\n".join(lines) + "\n")
 

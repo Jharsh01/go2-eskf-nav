@@ -167,6 +167,10 @@ class RunReport(Node):
         self.gt = self.est = self.leg = None
         self.est_slip = None            # slip-adaptive arm (/eskf_slip/odom)
         self.slip_score = None          # latest slip score (/eskf_slip/slip_score)
+        self.adapt_pitch = None         # terrain_adapt's attitude, +NOSE-UP [rad]
+        self.adapt_err = []             # (adapter pitch - truth) [rad], upright only
+        self.mag_heading = None         # raw tilt-compensated mag heading (/eskf/mag_heading)
+        self.mag_t = None               # receipt time of the above (staleness check)
         self.imu = None
         self.cmd = (0.0, 0.0)
         self.body_pose = None
@@ -187,6 +191,8 @@ class RunReport(Node):
         self.err_pos, self.err_yaw = [], []
         self.err_pos_slip, self.err_yaw_slip = [], []
         self.slip_scores = []
+        # (t, signed mag - truth yaw, turning?) for upright, fresh samples only.
+        self.mag_err = []
         self.optional = set()           # topics whose absence is not a fault
         self.slopes, self.elevs = [], []
         self.steepest = None            # (slope_deg, t, x, y)
@@ -213,6 +219,12 @@ class RunReport(Node):
         # that detects slip from one that inflates R_leg everywhere — and those two
         # produce the same (worse) trajectory when yaw is the error that matters.
         self.sub(Float64, "/eskf_slip/slip_score", self.on_slip, qd, optional=True)
+        # Raw magnetometer heading BEFORE fusion (use_mag). Against ground-truth yaw it
+        # is the sensor's own error — the one number that decides whether use_mag
+        # should default on (yaw_observability.py: pays if ≲5°, hurts at ~10°).
+        self.sub(Float64, "/eskf/mag_heading", self.on_mag, qd, optional=True)
+        # terrain_adapt.py's attitude estimate (--adapt), to score it against truth.
+        self.sub(Float64, "/terrain_adapt/pitch", self.on_adapt_pitch, qd, optional=True)
         self.sub(Odometry, "/odom/raw", self.on_leg, qd)
         self.sub(Imu, "/imu/data", self.on_imu, qos_profile_sensor_data)
         self.sub(Twist, "/cmd_vel", self.on_cmd, qd)
@@ -267,6 +279,13 @@ class RunReport(Node):
 
     def on_slip(self, m):
         self.slip_score = m.data
+
+    def on_adapt_pitch(self, m):
+        self.adapt_pitch = m.data
+
+    def on_mag(self, m):
+        self.mag_heading = m.data
+        self.mag_t = self.now()
 
     def on_leg(self, m):
         t = m.twist.twist
@@ -371,6 +390,24 @@ class RunReport(Node):
             self.err_pos_slip.append(math.hypot(self.est_slip[0] - self.gt[0],
                                                 self.est_slip[1] - self.gt[1]))
             self.err_yaw_slip.append(abs(wrap(self.est_slip[2] - self.gt[5])))
+        adapt = None
+        if self.adapt_pitch is not None:
+            adapt = self.adapt_pitch
+            # gt_pitch is REP-103 (+nose-DOWN); the adapter's is +nose-UP. The adapter
+            # low-passes over tau (0.7 s), so this error includes that lag by design.
+            if self.gt is not None and max(abs(self.gt[3]), abs(self.gt[4])) < math.radians(45):
+                self.adapt_err.append(adapt + self.gt[4])
+        mag = mag_err = None
+        # Stale after 1 s: the node stops publishing if the bridge dies, and a frozen
+        # heading scored against a moving truth would read as a huge sensor error.
+        if self.mag_heading is not None and t - self.mag_t <= 1.0:
+            mag = self.mag_heading
+            if self.gt is not None:
+                mag_err = wrap(mag - self.gt[5])
+                # Upright only: a fallen robot's "heading" is not what the sensor is
+                # for, and its tilt compensation is degenerate on its side.
+                if max(abs(self.gt[3]), abs(self.gt[4])) < math.radians(45):
+                    self.mag_err.append((rel, mag_err, abs(self.cmd[1]) > 0.1))
         if self.imu is not None:
             self.imu_pitch.append(self.imu[0])
             self.accel_mag.append(self.imu[2])
@@ -392,7 +429,7 @@ class RunReport(Node):
                self.slip_score,
                *lg, *im, *self.cmd, *bp,
                "".join("1" if c else "0" for c in self.contacts) if self.contacts else None,
-               jmax, jmean, terr_z, terr_s]
+               jmax, jmean, terr_z, terr_s, mag, mag_err, adapt]
 
         # Row cap: never grow without bound. On overflow, throw away every other row
         # and halve the effective rate — the run stays fully represented, at half detail.
@@ -447,12 +484,78 @@ class RunReport(Node):
                 "leg_vx", "leg_wz", "leg_degenerate", "imu_pitch", "imu_roll",
                 "accel_mag", "cmd_vx", "cmd_wz", "body_pose_x", "body_pose_z",
                 "contacts_lf_rf_lh_rh", "joint_err_max", "joint_err_mean",
-                "terrain_z", "terrain_slope_deg"]
+                "terrain_z", "terrain_slope_deg", "mag_heading", "mag_err",
+                "adapt_pitch_up"]
         path = os.path.join(self.out_dir, "timeseries.csv")
         with open(path, "w", newline="") as f:
             w = csv.writer(f)
             w.writerow(head)
             w.writerows(self.rows)
+
+    def write_mag_section(self, A):
+        """Magnetometer heading vs ground truth (only when use_mag was on)."""
+        if not self.mag_err:
+            if self.counts.get("/eskf/mag_heading"):
+                A("## Magnetometer heading vs ground truth")
+                A("")
+                A("`/eskf/mag_heading` published but there is no upright ground-truth "
+                  "overlap to score it against (needs `--plot`/`--square`).")
+                A("")
+            return
+        e = [x[1] for x in self.mag_err]
+        n = len(e)
+        mean = sum(e) / n
+        std = math.sqrt(sum((x - mean) ** 2 for x in e) / max(n - 1, 1))
+        a = sorted(abs(x) for x in e)
+        p90 = a[min(n - 1, int(0.9 * n))]
+
+        # Correlation time of the de-meaned error: first lag where the
+        # autocorrelation drops below 1/e. The fusion rate limit (mag_min_interval)
+        # only makes the white-noise R honest if this is short.
+        tau = None
+        if n > 20 and std > 0:
+            dt = (self.mag_err[-1][0] - self.mag_err[0][0]) / (n - 1)
+            z = [x - mean for x in e]
+            var = sum(v * v for v in z) / n
+            for lag in range(1, n // 2):
+                r = sum(z[i] * z[i + lag] for i in range(n - lag)) / ((n - lag) * var)
+                if r < 1.0 / math.e:
+                    tau = lag * dt
+                    break
+
+        def split(turning):
+            xs = [x[1] - mean for x in self.mag_err if x[2] == turning]
+            return (math.degrees(math.sqrt(sum(v * v for v in xs) / len(xs))), len(xs)) \
+                if xs else (None, 0)
+
+        d = math.degrees
+        A("## Magnetometer heading vs ground truth")
+        A("")
+        A("Raw `/eskf/mag_heading` (before fusion) minus ground-truth yaw, upright "
+          "samples only. This is the SENSOR's error, not the filter's.")
+        A("")
+        A("| metric | value |")
+        A("|---|---|")
+        A(f"| samples | {n} @ {self.csv_hz:g} Hz |")
+        A(f"| bias (mean) | {d(mean):+.2f}° |")
+        A(f"| std (de-biased) | **{d(std):.2f}°** |")
+        A(f"| p90 / max \\|err\\| | {d(p90):.2f}° / {d(a[-1]):.2f}° |")
+        for label, turning in (("std while walking straight", False),
+                               ("std while turning (\\|cmd_wz\\|>0.1)", True)):
+            v, k = split(turning)
+            A(f"| {label} | " + (f"{v:.2f}° ({k} samples)" if v is not None else "—") + " |")
+        A(f"| correlation time | " + (f"{tau:.1f} s" if tau is not None else
+                                        "longer than half the run") + " |")
+        A("")
+        verdict = ("≲5° → offline (`yaw_observability.py`) says fusing it PAYS on the "
+                   "square" if d(std) <= 5.0 else
+                   "5–10° → marginal offline; raise `mag_heading_noise` before relying on it"
+                   if d(std) <= 10.0 else
+                   ">10° → offline says it HURTS with GPS on; leave `use_mag` off")
+        A(f"Verdict for this run: std {d(std):.1f}° {verdict}. The bias is mostly the "
+          "startup calibration (it assumes spawn yaw = 0) and matters less than the std. "
+          "One run is one sample — see `skills.md` §0.")
+        A("")
 
     def git(self):
         try:
@@ -705,6 +808,20 @@ class RunReport(Node):
                 A("")
             A("Position error tracks yaw error ~1:1 with GPS off — yaw is exactly "
               "unobservable there, so read the yaw row first (`skills.md` §0).")
+            A("")
+
+        self.write_mag_section(A)
+        if self.adapt_err:
+            e = [math.degrees(x) for x in self.adapt_err]
+            a = sorted(abs(x) for x in e)
+            A("## terrain_adapt attitude vs ground truth")
+            A("")
+            A(f"`/terrain_adapt/pitch` (+nose-up) + ground-truth REP-103 pitch, upright "
+              f"samples: bias {sum(e) / len(e):+.2f}°, mean |err| {sum(a) / len(a):.2f}°, "
+              f"p90 {a[min(len(a) - 1, int(0.9 * len(a)))]:.2f}°, max {a[-1]:.2f}° "
+              f"({len(e)} samples). Includes the adapter's deliberate 0.7 s smoothing, so "
+              "it is never zero on a trotting robot whose true pitch rocks with the gait. "
+              "The accel-only estimator read +19° on flat ground at gait start (skills.md §0).")
             A("")
 
         # ---- topic health

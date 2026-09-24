@@ -127,6 +127,18 @@ This is the only globally-anchored sensor; it bounds long-term drift.
 measures the bias directly: `z = ω_gyro − ω_leg`, `h = b_g`. Only fused below
 0.10 rad/s; above that the residual is a rotation-dependent scale error, not bias.
 
+**Heading (magnetometer, optional, `use_mag`)** — `z = ψ_mag`, `h = ψ`, innovation
+wrapped to (−π, π]. The only update that observes ψ independently of velocity: GPS
+reaches ψ only through `P(v,ψ)` while moving, so it cannot correct heading while
+turning in place — exactly where the yaw error enters. `ψ_mag` comes from
+`EskfCore::magHeading`, a tilt compensation built from vectors (field and low-passed
+accelerometer "up", both in the IMU frame) rather than roll/pitch angles, so the sim
+IMU's flipped frame does not matter. Through `F(ψ,b_g) = −dt` it also makes `b_g`
+observable with no other sensor. Offline (`yaw_observability.py`, 5 m square):
+2.00° → 0.61° mean final yaw with GPS on, 23.4° → 0.61° with GPS off — *if* the
+tilt-induced heading error is ~2°; at 10° it is worse than GPS alone. That error is
+the one number not yet measured live.
+
 **Vertical anchor** — `z = 0`, `h = v_z`. `(pz, vz)` is otherwise unobservable and
 double-integrates to infinity (measured: `pz` reached 1601 m without it).
 
@@ -158,7 +170,7 @@ agreement immediately.
 
 | Phase | Deliverable | Résumé bullet |
 |-------|-------------|---------------|
-| **1 ✅** | ESKF core + 16 unit tests + NumPy cross-validation | #1 |
+| **1 ✅** | ESKF core + 22 unit tests + NumPy cross-validation | #1 |
 | **2 ✅** | ROS node (`eskf_node`): subs `imu/data`, `odom/raw`, `gps/fix`; GPS lat/lon→local ENU; publishes `eskf/odom` (+ optional TF); ground-truth CSV logging | #1 |
 | **3 ✅** | Slip model: PyTorch trainer (+ NumPy fallback) → exported weights → dependency-free Eigen MLP (`slip_model.hpp`) → adaptive `R_leg`; 12 unit tests + C++≡NumPy slip cross-validation (~3e-16) | #2 |
 | **4 ✅** | Benchmark: ATE / RPE / drift metrics with SE(2) alignment; fixed vs adaptive vs GPS-denied scenarios; auto-generated markdown report + plots | #3 |
@@ -202,7 +214,7 @@ the design now handles — each verified on live data via the NumPy twin:
    (`use_gps:=true`) can be enabled. The node ignores the bridged (all-zero)
    `position_covariance` and uses the `gps_pos_noise` parameter instead.
 
-**Validation status:** core math proven by 16 unit tests + C++≡NumPy
+**Validation status:** core math proven by 22 unit tests + C++≡NumPy
 cross-validation (~1e-14); the live-data behaviour (bounded estimate, leg-odom
 dominance) validated by replaying the real sim IMU/leg streams through the
 NumPy twin, which shares the node's algorithm exactly. A standing robot yields

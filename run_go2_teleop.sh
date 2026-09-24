@@ -29,6 +29,8 @@
 #   ./run_go2_teleop.sh --climb            # = --terrain --adapt --stiff
 #   ./run_go2_teleop.sh --no-report        # skip the run_report/ snapshot
 #   ./run_go2_teleop.sh --no-slip          # only ONE estimator (no slip-adaptive arm)
+#   ./run_go2_teleop.sh --no-gps           # drop /gps/fix (GPS is fused by DEFAULT)
+#   ./run_go2_teleop.sh --mag              # + magnetometer heading (both arms; off by default)
 #   ./run_go2_teleop.sh --timeout 600      # failsafe: tear everything down after 600 s
 #   ./run_go2_teleop.sh --square --no-timeout   # opt out of the cap entirely
 #
@@ -106,6 +108,8 @@ TERRAIN="false"                              # --terrain: uneven heightmap + low
 ADAPT="false"                                # --adapt: slope-adaptive /body_pose posture
 STIFF="false"                                # --stiff: 3x joint PD gains (go2_eskf config)
 SLIP="true"                                  # --no-slip: skip the 2nd (slip-adaptive) ESKF arm
+USE_GPS="true"                               # --no-gps: DROP /gps/fix (see the note at the launch below)
+USE_MAG="false"                              # --mag: fuse the gz magnetometer heading (correctYaw)
 REPORT="true"                                # --no-report to disable the run report
 RENDER="nvidia"                              # nvidia | software
 PLOT_INTERVAL="0.1"                          # plot redraw period [s] (10 Hz)
@@ -138,6 +142,9 @@ while [[ $# -gt 0 ]]; do
     --terrain)          TERRAIN="true" ;;     # uneven terrain + low-friction patches (slip model)
     --adapt)            ADAPT="true" ;;       # slope-adaptive body posture (terrain_adapt.py)
     --stiff)            STIFF="true" ;;       # 3x joint PD gains (ros_control_stiff.yaml)
+    --gps)              USE_GPS="true" ;;     # default; kept for compatibility
+    --no-gps)           USE_GPS="false" ;;    # leg odom + IMU only (yaw then unobservable)
+    --mag)              USE_MAG="true" ;;     # magnetometer heading on BOTH estimator arms
     --climb)            TERRAIN="true"; ADAPT="true"; STIFF="true" ;;  # both slope fixes on terrain
     --no-slip)          SLIP="false" ;;       # only the baseline (fixed-R) estimator
     --no-report)        REPORT="false" ;;     # skip the run_report/ snapshot
@@ -332,6 +339,8 @@ if [[ "$REPORT" == "true" ]]; then
     echo "Body-pose adapt: $ADAPT"
     echo "Square test: $SQUARE"
     echo "Slip arm: $SLIP"
+    echo "GPS fused: $USE_GPS"
+    echo "Magnetometer fused: $USE_MAG"
     echo "Failsafe timeout: $( ((TIMEOUT>0)) && echo "${TIMEOUT}s" || echo "off" )"
     echo "Rendering: $RENDER"
     echo "Gait: $(sed -n 's/^ *\(swing_height\|nominal_height\|stance_duration\|max_linear_velocity_x\) *: *\(.*\)/\1=\2/p' \
@@ -397,10 +406,15 @@ if [[ "$PLOT" == "true" ]]; then
 fi
 start_bg eskf \
   "$WAIT_READY; \
-   echo 'Starting ESKF (GPS OFF — the sim navsat is broken:'; \
-   echo '  ~0.5 deg / ~55 km position noise, which would wreck the estimate).'; \
+   echo 'Starting ESKF (GPS: $USE_GPS) — fusing IMU + leg odometry + GPS.'; \
+   echo '  The navsat sensor emitted ~0.5 deg / ~55 km of noise until its <stddev>'; \
+   echo '  was corrected from degrees to metres (unitree_go2_gazebo.xacro,'; \
+   echo '  2026-08-28) — it is now ~0.5 m and safe to fuse, so GPS is ON by default.'; \
+   echo '  It is the only absolute HEADING reference here: with it off, yaw is'; \
+   echo '  exactly unobservable and drifts open-loop. Pass --no-gps to drop it.'; \
+   echo 'Magnetometer heading: $USE_MAG  (--mag; raw heading on /eskf/mag_heading)'; \
    echo 'Slip-adaptive second arm: $SLIP  (-> /eskf_slip/odom)'; \
-   ros2 launch go2_eskf eskf.launch.py use_sim_time:=true use_gps:=false slip:=$SLIP $ESKF_GT_ARGS"
+   ros2 launch go2_eskf eskf.launch.py use_sim_time:=true use_gps:=$USE_GPS use_mag:=$USE_MAG slip:=$SLIP $ESKF_GT_ARGS"
 ESKF_PID=$REPLY
 
 # --- 4. Live trajectory plot (optional) — start only once the ESKF publishes,

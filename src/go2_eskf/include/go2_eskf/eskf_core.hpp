@@ -78,6 +78,16 @@ class EskfCore {
   // R should be loose enough to permit gait bob (~0.3 m/s).
   void correctVerticalVel(double vz_meas, double r);
 
+  // Direct heading measurement: h = psi, innovation WRAPPED to (-pi, pi] so a
+  // measurement across the +-pi seam is a small correction, not a 2*pi one.
+  // This is the only update that observes psi independently of velocity: leg
+  // odometry cannot see heading at all (see DESIGN.md) and GPS only sees it
+  // while the robot is moving, so neither helps while turning in place.
+  // Fed by the magnetometer (magHeading below) or any AHRS yaw. The source MUST
+  // be independent of the other corrections — a heading derived from GPS fixes
+  // double-counts them (yaw_observability.py measured it making things worse).
+  void correctYaw(double psi_meas, double r);
+
   // --- Accessors ------------------------------------------------------------
   const Vec8& state() const { return x_; }
   const Mat8& covariance() const { return P_; }
@@ -89,6 +99,20 @@ class EskfCore {
   static Eigen::Matrix3d rotBodyToWorld(double roll, double pitch, double yaw);
   // Derivative of the above w.r.t. yaw (needed for the Jacobian).
   static Eigen::Matrix3d dRotDYaw(double roll, double pitch, double yaw);
+  // Tilt-compensated heading from a 3-axis magnetometer.
+  //   mag_sensor   : magnetic field in the sensor frame (any unit)
+  //   up_sensor    : world "up" in the SAME sensor frame (e.g. the low-passed
+  //                  accelerometer — specific force at rest points up)
+  //   field_heading: world-frame (ENU) angle of the field's horizontal part,
+  //                  atan2(B_y, B_x) = atan2(B_north, B_east)
+  // Returns the yaw of the sensor's +x axis in the world frame. Built from
+  // vectors, not roll/pitch angles, so it is independent of how the sensor is
+  // mounted (the sim IMU's frame is flipped, DESIGN.md §6) as long as +x points
+  // forward. Returns false — psi untouched — when the geometry is degenerate:
+  // the field or the forward axis is (nearly) vertical, so heading is undefined.
+  static bool magHeading(const Eigen::Vector3d& mag_sensor,
+                         const Eigen::Vector3d& up_sensor, double field_heading,
+                         double* psi);
 
  private:
   template <int MeasDim>

@@ -7,7 +7,7 @@ Like `ekf_estimator`, the math is a **ROS-free C++/Eigen core** (`eskf_core`)
 so it unit-tests and cross-validates in isolation, wrapped by a thin ROS node.
 
 ## Status
-- **Phase 1 ✅** — ESKF core, 16 GTest unit tests, NumPy reference +
+- **Phase 1 ✅** — ESKF core, 22 GTest unit tests, NumPy reference +
   cross-validation harness (C++ ≡ NumPy to ~1e-14).
 - **Phase 2 ✅** — live ROS node `eskf_node` (IMU predict, leg-odom + GPS
   corrections, ENU conversion, ground-truth logging). Robust `gravity_lp`
@@ -371,7 +371,7 @@ shows up there first. Run it after touching either.
 
 ```bash
 python3 src/go2_eskf/scripts/cross_validate.py   # C++ core  ≡ NumPy twin
-./build/go2_eskf/test_eskf_core                  # 16 GTest cases
+./build/go2_eskf/test_eskf_core                  # 22 GTest cases
 ```
 
 ---
@@ -425,7 +425,7 @@ scripts/            eskf_reference.py          (ESKF NumPy twin)
                     train_slip_model.py        (PyTorch / NumPy trainer)
                     metrics.py                 (ATE/RPE/drift, Phase 4)
                     run_benchmark.py           (scenarios -> report + plots)
-test/               test_eskf_core.cpp         (16 GTest cases)
+test/               test_eskf_core.cpp         (22 GTest cases)
                     test_slip_model.cpp        (12 GTest cases)
 config/             eskf_params.yaml, slip_model.txt
 launch/             eskf.launch.py, benchmark.launch.py

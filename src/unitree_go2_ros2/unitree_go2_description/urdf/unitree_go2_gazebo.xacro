@@ -107,7 +107,53 @@
             </sensor>
         </gazebo>
 
-        <!-- GPS / NavSat plugin — simulates u-blox standard GPS (~0.5 m horizontal noise) -->
+        <!-- Magnetometer — VENDORED EDIT (additive), for go2_eskf's heading update.
+             On imu_link, i.e. the SAME frame as the accelerometer, because go2_eskf
+             tilt-compensates it with the low-passed accelerometer as "up" instead of
+             roll/pitch angles (the gz-IMU orientation is unreliable, DESIGN.md §6).
+             Non-rendering, so it adds no GPU load. Bridged by go2_eskf
+             eskf.launch.py use_mag:=true; harmless when nothing subscribes.
+             MEASURED 2026-09-23 (headless gz world, static models at known poses):
+             * Because every Go2 world sets <spherical_coordinates>, gz IGNORES the
+               SDF <magnetic_field> default and computes the field from its WMM tables
+               at the datum, in GAUSS despite the msg field being named field_tesla:
+               |B| = 0.4326, horizontal 0.3096, pointing 4.0 deg from world +x
+               (0.0699 rad) — not the SDF default's 76 deg.
+             * The noise <stddev> is added in those same units, so it is in GAUSS:
+               0.005 G (= 0.5 uT) per axis measured 0.98 deg of heading std.
+             * The tilt-compensated heading recovered the true yaw to 0.000 deg at
+               four poses, including one mounted upside down (roll = pi). -->
+        <xacro:property name="mag_noise_gauss" value="0.005"/>
+        <gazebo reference="imu_link">
+            <sensor name="mag_sensor" type="magnetometer">
+                <always_on>true</always_on>
+                <update_rate>20</update_rate>
+                <topic>imu/mag</topic>
+                <gz_frame_id>imu_link</gz_frame_id>
+                <magnetometer>
+                    <x><noise type="gaussian"><mean>0.0</mean><stddev>${mag_noise_gauss}</stddev></noise></x>
+                    <y><noise type="gaussian"><mean>0.0</mean><stddev>${mag_noise_gauss}</stddev></noise></y>
+                    <z><noise type="gaussian"><mean>0.0</mean><stddev>${mag_noise_gauss}</stddev></noise></z>
+                </magnetometer>
+                <plugin filename="gz-sim-magnetometer-system" name="gz::sim::systems::Magnetometer"/>
+            </sensor>
+        </gazebo>
+
+        <!-- GPS / NavSat plugin — simulates u-blox standard GPS.
+             VENDORED EDIT (additive): the horizontal position noise is specified
+             in DEGREES, not metres. gz-sensors adds the <stddev> straight onto the
+             latitude/longitude in degrees, so the original <stddev>0.5</stddev>
+             meant ~0.5 deg = ~55 km of scatter, which is why GPS was unusable and
+             switched off by default. Expressed in metres and converted here.
+             The divisor is metres-per-degree at the world datum (lat 30.0444), on
+             the SAME spherical earth model eskf_node's gpsToEnu uses (R=6371 km):
+               1 deg lat = 111195 m,  1 deg lon = 111195*cos(30.0444) = 96269 m.
+             SDF allows only ONE horizontal noise for both axes, so this uses their
+             geometric mean (103459 m/deg); at 0.5 m nominal that lands 0.54 m
+             north/south and 0.46 m east/west. Vertical noise is NOT converted: the
+             altitude field is natively metres, so it was never affected. -->
+        <xacro:property name="gps_noise_m" value="0.5"/>
+        <xacro:property name="gps_m_per_deg" value="103459.0"/>
         <gazebo reference="gps_link">
             <sensor name="navsat_sensor" type="navsat">
                 <always_on>true</always_on>
@@ -119,7 +165,7 @@
                         <horizontal>
                             <noise type="gaussian">
                                 <mean>0.0</mean>
-                                <stddev>0.5</stddev>
+                                <stddev>${gps_noise_m / gps_m_per_deg}</stddev>
                             </noise>
                         </horizontal>
                         <vertical>

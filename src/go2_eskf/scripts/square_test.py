@@ -31,7 +31,7 @@ import math
 import sys
 
 import rclpy
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Pose, Twist
 from nav_msgs.msg import Odometry
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -70,6 +70,15 @@ class SquareTest(Node):
     # terrain.sdf: a fall at (9,-3) produced 50 s of phantom motion and a bogus
     # 8.8 m "drift" figure. Post-standing falls are caught by TILT_MAX / stall below.
     STAND_Z = 0.18
+    # ...minus the crouch terrain_adapt.py (--adapt) is COMMANDING right now on
+    # /body_pose (position.z is a delta on nominal_height, negative = lower). Without
+    # this the check contradicts the adapter by construction: nominal 0.225 - its
+    # max_crouch 0.06 = 0.165 < 0.18. MEASURED 2026-09-23: a spurious 3.3 cm crouch
+    # plus normal trot bob put an UPRIGHT robot at z=0.180 and aborted the run as a
+    # "fall". With no adapter nothing publishes /body_pose, the credit stays 0, and
+    # stock runs keep exactly the 0.18 they were validated with. The credit is capped
+    # so a rogue publisher cannot switch the check off (real belly flops: z~0.06).
+    MAX_CROUCH_CREDIT = 0.08
     # Body tilt beyond which it has certainly gone over. Must clear the terrain
     # slope a STANDING robot legitimately sits at: terrain.sdf reaches 19.5 deg at
     # the default --relief 0.7 and 38.9 deg at 1.6, hence 60.
@@ -83,8 +92,42 @@ class SquareTest(Node):
     STALL_YAW = 0.15        # [rad] yaw change below this counts as no progress
     STALL_CMD = 0.02        # [m/s, rad/s] commanded motion above this counts as "asked to move"
 
-    def __init__(self, side, speed, ccw):
+    # --- Command shaping (2026-09-23). The 23:20 run stumbled ~2 s after /cmd_vel
+    # stepped 0 -> 0.25 m/s in one tick while cmd_wz flickered 0 -> 0.25 -> 0.04 ->
+    # 0.17 in 0.6 s, the steering chasing a truth yaw that wobbles ~+-10 deg with each
+    # trot step. So: rate-limit both channels, and steer off a low-passed heading.
+    # Aborts bypass the limiter (they publish zero directly). --no-shaping = old.
+    # Only SPEEDING UP is limited. Slowing down, stopping and reversing (via zero)
+    # are immediate: the 23:28 run showed a symmetric limit is harmful — told to stop
+    # and turn in place at a missed corner, the robot kept walking for 2 s and needed
+    # 2 s more to reverse its turn, looping round the corner until the stall detector
+    # fired (skills.md §0).
+    ACCEL_MAX = 0.125       # [m/s^2]   0 -> 0.25 m/s in 2 s
+    ALPHA_MAX = 0.4         # [rad/s^2] 0 -> W_MAX in 1 s
+    YAW_TAU = 0.25          # [s] heading low-pass for steering (~0.1 rad lag at W_MAX)
+
+    # --- Stumble recovery (2026-09-23). A fall condition (height below stand_z() or
+    # tilt above TILT_MAX) used to abort on the FIRST sample. The 23:20 robot buckled
+    # to z=0.139 for one sample, bounced, rolled 48.7 deg, and was standing upright
+    # 2 s later — a run thrown away over a recoverable stumble. Now a fall condition
+    # PAUSES the square (zero command, so the gait can re-plant) and it resumes, from a
+    # fresh ramp, once the robot has been settled for RECOVER_HOLD. It aborts only if
+    # the fall condition persists FALL_HOLD continuously (a belly flop or a flip stays
+    # down) or it has not settled within RECOVER_MAX.
+    FALL_HOLD = 0.5         # [s]
+    SETTLE_TILT = math.radians(25.0)   # settled = standing AND tilt below this
+    RECOVER_HOLD = 1.0      # [s]
+    RECOVER_MAX = 5.0       # [s]
+
+    def __init__(self, side, speed, ccw, shaping=True):
         super().__init__("square_test")
+        self.shaping = shaping
+        self.cmd_v = 0.0        # last published (shaped) command
+        self.cmd_w = 0.0
+        self.yaw_f = None       # low-passed heading used for steering
+        self.last_t = None
+        self.recovering = None  # None, or dict(start, bad_since, settled_since, why)
+        self.stumbles = 0
         self.V_MAX = min(speed, 0.3)
         self.side = side
         s = side
@@ -97,6 +140,7 @@ class SquareTest(Node):
         self.mode = "TURN"
         self.truth = None       # (x, y, yaw)
         self.truth_z = None     # base height [m], for the standing check
+        self.crouch = 0.0       # commanded crouch from /body_pose [m], >= 0
         self.truth_tilt = 0.0   # angle between base z and world z [rad]
         self.prone_warned = False
         self.stood_once = False  # distinguishes "never stood" from "fell mid-run"
@@ -112,6 +156,7 @@ class SquareTest(Node):
                          history=HistoryPolicy.KEEP_LAST, depth=10)
         self.create_subscription(Odometry, "/ground_truth/odom", self._gt_cb, qos)
         self.create_subscription(Odometry, "/eskf/odom", self._est_cb, qos)
+        self.create_subscription(Pose, "/body_pose", self._body_pose_cb, 10)
         self.cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
         self.timer = self.create_timer(0.05, self._step)  # 20 Hz
         self.get_logger().info(
@@ -127,6 +172,13 @@ class SquareTest(Node):
         # 1 - 2(qx^2 + qy^2). Independent of terrain height, unlike truth_z.
         self.truth_tilt = math.acos(
             max(-1.0, min(1.0, 1.0 - 2.0 * (q.x * q.x + q.y * q.y))))
+
+    def _body_pose_cb(self, msg):
+        self.crouch = min(max(0.0, -msg.position.z), self.MAX_CROUCH_CREDIT)
+
+    def stand_z(self):
+        """Standing threshold, lowered by whatever crouch is being commanded."""
+        return self.STAND_Z - self.crouch
 
     def _est_cb(self, msg):
         p = msg.pose.pose.position
@@ -161,24 +213,93 @@ class SquareTest(Node):
             f"  final error        : {final:.3f} m ({100.0 * final / dist:.2f}% of distance)\n"
             f"  max error          : {self.max_err:.3f} m\n"
             f"  mean error         : {mean:.3f} m\n"
+            f"  stumbles recovered : {self.stumbles}\n"
             "================================")
 
     def _stalled(self):
-        """Commanded to move for a whole window, but ground truth did not move."""
+        """Commanded to move for a whole window, but ground truth never went anywhere.
+
+        Progress is the MAXIMUM excursion from the window's first sample — how far
+        the robot ever got from there, in position or heading — not the endpoint
+        difference. MEASURED 2026-09-23: circling a missed corner, the 23:28 robot
+        walked a ~0.6 m loop that ended 4 cm from where it began, and the endpoint
+        test called that a 9 s stall. A robot scrabbling in place still never gets
+        STALL_DIST from its start, so it is still caught.
+        """
         if len(self.history) < 2:
             return None
         t0, x0, y0, yaw0, _ = self.history[0]
-        t1, x1, y1, yaw1, _ = self.history[-1]
+        t1 = self.history[-1][0]
         if t1 - t0 < self.STALL_WIN:
             return None                       # not enough history yet
         if not all(moving for _, _, _, _, moving in self.history):
             return None                       # we were not asking it to move
-        moved = math.hypot(x1 - x0, y1 - y0)
-        turned = abs(wrap(yaw1 - yaw0))
+        moved = max(math.hypot(x - x0, y - y0) for _, x, y, _, _ in self.history)
+        turned = max(abs(wrap(yw - yaw0)) for _, _, _, yw, _ in self.history)
         if moved < self.STALL_DIST and turned < self.STALL_YAW:
             return (f"no progress for {t1 - t0:.1f} s while commanded to move "
-                    f"({moved * 100:.0f} cm, {math.degrees(turned):.0f} deg)")
+                    f"(never more than {moved * 100:.0f} cm / "
+                    f"{math.degrees(turned):.0f} deg from where it was)")
         return None
+
+    @staticmethod
+    def _ramp(cur, tgt, step):
+        """Limit growth of |cmd| to `step`; shrinking it (or crossing zero) is instant."""
+        if cur * tgt < 0.0:
+            cur = 0.0                      # reversing: drop to zero at once...
+        if abs(tgt) <= abs(cur):
+            return tgt                     # slowing down: immediate
+        return cur + max(-step, min(step, tgt - cur))   # ...then speed up gradually
+
+    def _shape(self, cmd, dt):
+        """Rate-limit speed-ups (see ACCEL_MAX). Identity with --no-shaping."""
+        if self.shaping:
+            cmd.linear.x = self._ramp(self.cmd_v, cmd.linear.x, self.ACCEL_MAX * dt)
+            cmd.angular.z = self._ramp(self.cmd_w, cmd.angular.z, self.ALPHA_MAX * dt)
+        self.cmd_v, self.cmd_w = cmd.linear.x, cmd.angular.z
+        return cmd
+
+    def _filtered_yaw(self, yaw, dt):
+        """Heading low-pass on the unit circle (wrap-safe). Raw with --no-shaping."""
+        if not self.shaping:
+            return yaw
+        if self.yaw_f is None:
+            self.yaw_f = [math.cos(yaw), math.sin(yaw)]
+        else:
+            a = dt / (self.YAW_TAU + dt)
+            self.yaw_f[0] += a * (math.cos(yaw) - self.yaw_f[0])
+            self.yaw_f[1] += a * (math.sin(yaw) - self.yaw_f[1])
+        return math.atan2(self.yaw_f[1], self.yaw_f[0])
+
+    def _recover(self, now, fall):
+        """One tick of stumble recovery. True while still recovering (or aborted)."""
+        rec = self.recovering
+        self.cmd_pub.publish(Twist())
+        self.cmd_v = self.cmd_w = 0.0            # resume from a fresh ramp
+        if fall is not None:
+            rec["bad_since"] = rec["bad_since"] or now
+            rec["why"] = fall
+            if now - rec["bad_since"] >= self.FALL_HOLD:
+                self._abort_fallen(f"{fall}, for {self.FALL_HOLD} s")
+                return True
+        else:
+            rec["bad_since"] = None
+        settled = fall is None and self.truth_tilt < self.SETTLE_TILT
+        if settled:
+            rec["settled_since"] = rec["settled_since"] or now
+            if now - rec["settled_since"] >= self.RECOVER_HOLD:
+                self.stumbles += 1
+                self.recovering = None
+                self.history.clear()             # the pause is not a stall
+                self.get_logger().info(
+                    f"RECOVERED from stumble #{self.stumbles} after "
+                    f"{now - rec['start']:.1f} s — resuming the square.")
+                return False
+        else:
+            rec["settled_since"] = None
+        if now - rec["start"] > self.RECOVER_MAX:
+            self._abort_fallen(f"not settled {self.RECOVER_MAX} s after: {rec['why']}")
+        return True
 
     def _abort_fallen(self, why):
         self.cmd_pub.publish(Twist())
@@ -200,11 +321,11 @@ class SquareTest(Node):
         # Before it has ever stood, the absolute STAND_Z test is the right one: every
         # world spawns the robot on ground at elevation 0. See STAND_Z.
         if not self.stood_once:
-            if self.truth_z is not None and self.truth_z < self.STAND_Z:
+            if self.truth_z is not None and self.truth_z < self.stand_z():
                 self.cmd_pub.publish(Twist())
                 if not self.prone_warned:
                     self.get_logger().warn(
-                        f"Robot base is at z={self.truth_z:.3f} m (< {self.STAND_Z} m) and it has "
+                        f"Robot base is at z={self.truth_z:.3f} m (< {self.stand_z():.3f} m) and it has "
                         "never stood, so /cmd_vel is held at zero. The leg controller most likely "
                         "never activated: check `ros2 control list_controllers` for "
                         "joint_group_effort_controller.")
@@ -215,20 +336,36 @@ class SquareTest(Node):
                 self.get_logger().info("Robot is standing now — starting the square.")
                 self.prone_warned = False
 
+        now = self.get_clock().now().nanoseconds * 1e-9
+        dt = 0.05 if self.last_t is None else min(max(now - self.last_t, 0.0), 0.2)
+        self.last_t = now
+
         # It has walked. Now detect going down WITHOUT assuming flat ground: absolute
-        # height (valid on flat only), body tilt, and a stall. Any one aborts.
-        if self.truth_z is not None and self.truth_z < self.STAND_Z:
-            self._abort_fallen(f"base z={self.truth_z:.3f} m below {self.STAND_Z} m")
-            return
-        if self.truth_tilt > self.TILT_MAX:
-            self._abort_fallen(f"body tilted {math.degrees(self.truth_tilt):.0f} deg")
-            return
+        # height (valid on flat only) and body tilt pause-then-maybe-abort (see
+        # FALL_HOLD); a stall aborts outright.
+        fall = None
+        if self.truth_z is not None and self.truth_z < self.stand_z():
+            fall = (f"base z={self.truth_z:.3f} m below {self.stand_z():.3f} m "
+                    f"(STAND_Z {self.STAND_Z} - commanded crouch {self.crouch:.3f})")
+        elif self.truth_tilt > self.TILT_MAX:
+            fall = f"body tilted {math.degrees(self.truth_tilt):.0f} deg"
+        if fall is not None and self.recovering is None:
+            self.recovering = dict(start=now, bad_since=None, settled_since=None,
+                                   why=fall)
+            self.get_logger().warn(
+                f"STUMBLE at truth=({self.truth[0]:+.2f},{self.truth[1]:+.2f}): {fall} "
+                f"— holding zero command; aborting only if it persists "
+                f"{self.FALL_HOLD} s or it has not settled in {self.RECOVER_MAX} s.")
+        if self.recovering is not None:
+            if self._recover(now, fall):
+                return
         stall = self._stalled()
         if stall is not None:
             self._abort_fallen(stall)
             return
 
-        x, y, yaw = self.truth
+        x, y, yaw_raw = self.truth
+        yaw = self._filtered_yaw(yaw_raw, dt)
         gx, gy = self.waypoints[self.wp_i]
         dist = math.hypot(gx - x, gy - y)
 
@@ -256,13 +393,13 @@ class SquareTest(Node):
             else:
                 cmd.linear.x = min(self.V_MAX, max(0.08, 0.8 * dist))
                 cmd.angular.z = max(-self.W_MAX, min(self.W_MAX, 1.2 * herr))
+        cmd = self._shape(cmd, dt)
         self.cmd_pub.publish(cmd)
 
         # Feed the stall detector: what we asked for, and where truth actually is.
         moving = (abs(cmd.linear.x) > self.STALL_CMD or
                   abs(cmd.angular.z) > self.STALL_CMD)
-        now = self.get_clock().now().nanoseconds * 1e-9
-        self.history.append((now, x, y, yaw, moving))
+        self.history.append((now, x, y, yaw_raw, moving))
         # Keep MORE than one window, so the oldest sample is genuinely >= STALL_WIN
         # old and _stalled()'s span test can actually be satisfied.
         while self.history and now - self.history[0][0] > self.STALL_WIN * 1.5:
@@ -275,10 +412,13 @@ def main():
     ap.add_argument("--side", type=float, default=5.0, help="square side [m]")
     ap.add_argument("--speed", type=float, default=0.25, help="forward speed [m/s]")
     ap.add_argument("--ccw", action="store_true", help="counter-clockwise square")
+    ap.add_argument("--no-shaping", action="store_true",
+                    help="publish the raw controller output (step commands, steering "
+                         "off unfiltered truth yaw) — the pre-2026-09-23 behaviour")
     args = ap.parse_args(argv[1:])
 
     rclpy.init()
-    node = SquareTest(args.side, args.speed, args.ccw)
+    node = SquareTest(args.side, args.speed, args.ccw, shaping=not args.no_shaping)
     try:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):

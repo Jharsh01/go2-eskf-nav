@@ -1,6 +1,7 @@
 // eskf_node.hpp
 // ROS 2 wrapper around EskfCore. Drives prediction from the IMU and applies
-// leg-odometry (body velocity) and GPS (world position) corrections, then
+// leg-odometry (body velocity), GPS (world position) and, optionally,
+// magnetometer (heading) corrections, then
 // publishes eskf/odom and (optionally) a world->base TF. Optionally logs the
 // estimate alongside a ground-truth topic for the Phase 4 benchmark.
 
@@ -16,6 +17,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
+#include <sensor_msgs/msg/magnetic_field.hpp>
 #include <sensor_msgs/msg/nav_sat_fix.hpp>
 #include <std_msgs/msg/float64.hpp>
 #include <tf2_ros/transform_broadcaster.h>
@@ -31,6 +33,7 @@
 #include "go2_eskf/eskf_core.hpp"
 #include "go2_eskf/slip_model.hpp"
 
+
 namespace go2_eskf {
 
 class EskfNode : public rclcpp::Node {
@@ -41,6 +44,7 @@ class EskfNode : public rclcpp::Node {
   void imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg);
   void legOdomCallback(const nav_msgs::msg::Odometry::SharedPtr msg);
   void gpsCallback(const sensor_msgs::msg::NavSatFix::SharedPtr msg);
+  void magCallback(const sensor_msgs::msg::MagneticField::SharedPtr msg);
   void groundTruthCallback(const nav_msgs::msg::Odometry::SharedPtr msg);
   void cmdVelCallback(const geometry_msgs::msg::Twist::SharedPtr msg);
   void jointStateCallback(const sensor_msgs::msg::JointState::SharedPtr msg);
@@ -94,9 +98,64 @@ class EskfNode : public rclcpp::Node {
   double accel_clip_ = 40.0;
   double gyro_z_sign_ = 1.0;  // -1 un-flips the sim IMU's negated yaw rate
 
-  // GPS datum (first valid fix defines the ENU origin).
+  // GPS datum: the ENU origin, averaged over the first gps_datum_samples_ fixes.
+  // A SINGLE fix used to define it, which pinned the whole world frame to that
+  // one sample's noise — a constant offset on every position the filter ever
+  // reports. Averaging N fixes shrinks it by sqrt(N) and costs only N/10 s of
+  // startup at the sensor's 10 Hz.
   bool gps_datum_set_ = false;
+  int gps_datum_samples_ = 10;
+  int gps_datum_count_ = 0;
+  double lat_sum_ = 0.0, lon_sum_ = 0.0;
   double lat0_ = 0.0, lon0_ = 0.0;
+
+  // Magnetometer heading (use_mag). The one INDEPENDENT absolute heading source:
+  // GPS reaches psi only through velocity (so not while turning in place) and
+  // leg odometry not at all. Tilt compensation uses grav_lp_ as "up" — the same
+  // sensor frame as the magnetometer when both sit on imu_link — so no roll/
+  // pitch angles (unreliable in this sim) are involved.
+  bool use_mag_ = false;
+  double r_mag_ = 2.5e-3;           // variance of the heading measurement [rad^2]
+  double mag_min_interval_ = 0.1;   // [s] fuse at most this often (noise is
+                                    // time-correlated through the tilt estimate)
+  double mag_norm_gate_ = 0.25;     // reject |B| off the reference by > this fraction
+  // Reference = world angle of the field's horizontal part. With
+  // mag_calibrate_heading_ it is calibrated from the first mag_ref_samples_
+  // readings against the filter's own initial heading (sim: the robot spawns at
+  // yaw 0 in ENU, and the gz field direction is then irrelevant); otherwise
+  // mag_field_heading_ is used as given — e.g. from declination on hardware.
+  // The field-norm reference for the disturbance gate is averaged over the same
+  // samples either way.
+  int mag_ref_samples_ = 50;
+  bool mag_calibrate_heading_ = true;
+  double mag_field_heading_ = 0.0699;
+  bool mag_ref_set_ = false;
+  int mag_ref_count_ = 0;
+  double mag_ref_c_ = 0.0, mag_ref_s_ = 0.0, mag_norm_sum_ = 0.0;
+  double mag_ref_norm_ = 0.0;
+  rclcpp::Time last_mag_fuse_time_;
+  bool have_mag_fused_ = false;
+  uint64_t n_mag_msgs_ = 0, n_mag_fused_ = 0, n_mag_norm_rejected_ = 0;
+
+  // Tilt-dependent R (2026-09-24). The heading error comes from "up" (grav_lp_)
+  // lagging the gait's roll/pitch rocking. That lag is exactly the HIGH-pass of the
+  // body tilt with grav_lp_'s own time constant, which the gyro measures directly:
+  // tilt_hp_ = beta * (tilt_hp_ + w_xy * dt) mirrors grav_lp_'s discrete low-pass.
+  // Only |tilt_hp_| is used, so a flipped gyro x/y axis would not matter.
+  // MEASURED on the 23:47 run (5 Hz, truth tilt): mag error rms 2.7 / 4.1 / 6.2 /
+  // 8.8 deg for tilt lag 0-3 / 3-6 / 6-10 / 10+ deg, fit
+  // sigma^2 = (2.96 deg)^2 + (0.60 * lag)^2 — hence mag_tilt_gain 0.60.
+  Eigen::Vector2d tilt_hp_ = Eigen::Vector2d::Zero();
+  double mag_tilt_gain_ = 0.60;
+  // Innovation gate: skip a heading whose wrapped innovation exceeds
+  // mag_gate_sigma_ * sqrt(P_psi + R). A gate alone can lock out a filter whose
+  // heading really has gone wrong, so after mag_gate_reset_sec_ of unbroken
+  // rejections the next sample is fused regardless.
+  double mag_gate_sigma_ = 3.0;       // 0 disables
+  double mag_gate_reset_sec_ = 5.0;
+  bool mag_rejecting_ = false;
+  rclcpp::Time mag_reject_start_;
+  uint64_t n_mag_gate_rejected_ = 0, n_mag_gate_forced_ = 0;
 
   // Latest ground truth (for logging only). The twist is what labels the slip
   // training set: the gz OdometryPublisher reports it in the CHILD (body) frame,
@@ -186,6 +245,7 @@ class EskfNode : public rclcpp::Node {
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr leg_odom_sub_;
   rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr gps_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::MagneticField>::SharedPtr mag_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr gt_sub_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_sub_;
@@ -197,6 +257,10 @@ class EskfNode : public rclcpp::Node {
   // b_g is the state that corrupts heading (predict integrates gyro_z - b_g), so
   // publish it: a poisoned bias is invisible in a position-error plot.
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr gyro_bias_pub_;
+  // The raw tilt-compensated magnetometer heading, before fusion — compare it
+  // to ground-truth yaw to validate the sensor/frame chain independently of
+  // the filter.
+  rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr mag_heading_pub_;
   std::unique_ptr<tf2_ros::TransformBroadcaster> tf_broadcaster_;
 
   std::ofstream log_file_;

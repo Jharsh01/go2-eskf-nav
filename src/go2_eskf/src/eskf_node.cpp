@@ -1,6 +1,8 @@
 // eskf_node.cpp
 #include "go2_eskf/eskf_node.hpp"
 
+#include <algorithm>
+#include <cstdint>
 #include <cmath>
 
 #include <geometry_msgs/msg/transform_stamped.hpp>
@@ -104,7 +106,24 @@ EskfNode::EskfNode() : rclcpp::Node("eskf_node") {
   // Independent of use_slip_model_ — the features are all sensor-derived, so the
   // BASELINE arm can record a training set while the slip arm is still running
   // whatever model exists today.
+  gps_datum_samples_ = static_cast<int>(
+      std::max<int64_t>(1, declare_parameter<int>("gps_datum_samples", 10)));
   const auto slip_log_path = declare_parameter<std::string>("slip_log_path", "");
+
+  // --- Magnetometer heading (see the header for the reference/gate design)
+  use_mag_ = declare_parameter<bool>("use_mag", false);
+  const auto mag_topic = declare_parameter<std::string>("mag_topic", "imu/mag");
+  const double mag_std = declare_parameter<double>("mag_heading_noise", 0.05);
+  r_mag_ = mag_std * mag_std;
+  mag_min_interval_ = declare_parameter<double>("mag_min_interval", 0.1);
+  mag_tilt_gain_ = declare_parameter<double>("mag_tilt_gain", 0.60);
+  mag_gate_sigma_ = declare_parameter<double>("mag_gate_sigma", 3.0);
+  mag_gate_reset_sec_ = declare_parameter<double>("mag_gate_reset_sec", 5.0);
+  mag_norm_gate_ = declare_parameter<double>("mag_norm_gate", 0.25);
+  mag_ref_samples_ = static_cast<int>(
+      std::max<int64_t>(1, declare_parameter<int>("mag_ref_samples", 50)));
+  mag_calibrate_heading_ = declare_parameter<bool>("mag_calibrate_heading", true);
+  mag_field_heading_ = declare_parameter<double>("mag_field_heading", 0.0699);
   if (use_slip_model_) {
     if (slip_model_path.empty()) {
       RCLCPP_WARN(get_logger(),
@@ -135,6 +154,13 @@ EskfNode::EskfNode() : rclcpp::Node("eskf_node") {
     gps_sub_ = create_subscription<sensor_msgs::msg::NavSatFix>(
         gps_topic, rclcpp::SensorDataQoS(),
         std::bind(&EskfNode::gpsCallback, this, std::placeholders::_1));
+  }
+  if (use_mag_) {
+    mag_sub_ = create_subscription<sensor_msgs::msg::MagneticField>(
+        mag_topic, rclcpp::SensorDataQoS(),
+        std::bind(&EskfNode::magCallback, this, std::placeholders::_1));
+    mag_heading_pub_ =
+        create_publisher<std_msgs::msg::Float64>("eskf/mag_heading", 10);
   }
   if (!gt_topic.empty()) {
     gt_sub_ = create_subscription<nav_msgs::msg::Odometry>(
@@ -205,9 +231,10 @@ EskfNode::EskfNode() : rclcpp::Node("eskf_node") {
   }
 
   RCLCPP_INFO(get_logger(),
-              "go2_eskf node up. IMU=%s leg=%s gps=%s(%s) -> %s",
+              "go2_eskf node up. IMU=%s leg=%s gps=%s(%s) mag=%s(%s) -> %s",
               imu_topic.c_str(), leg_topic.c_str(), gps_topic.c_str(),
-              use_gps_ ? "on" : "off", out_topic.c_str());
+              use_gps_ ? "on" : "off", mag_topic.c_str(),
+              use_mag_ ? "on" : "off", out_topic.c_str());
 }
 
 void EskfNode::imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg) {
@@ -242,11 +269,19 @@ void EskfNode::imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg) {
   // Resolve the effective acceleration and attitude fed to the filter. roll_/
   // pitch_ are only used to cancel gravity (and to label the output odom).
   Eigen::Vector3d accel_eff = accel;
+  // Track gravity+mount with a slow low-pass. Updated for EVERY attitude source:
+  // besides gravity_lp's motion extraction below, it is the magnetometer's "up"
+  // vector (in the IMU's own frame, so the frame flip is irrelevant there too).
+  grav_lp_ = grav_lp_beta_ * grav_lp_ + (1.0 - grav_lp_beta_) * accel;
+  // How far the real tilt has run ahead of grav_lp_: the same first-order filter's
+  // high-pass, driven by the gyro's roll/pitch rates (see the header).
+  tilt_hp_ = grav_lp_beta_ *
+             (tilt_hp_ + Eigen::Vector2d(msg->angular_velocity.x,
+                                         msg->angular_velocity.y) * dt);
   if (attitude_source_ == "gravity_lp") {
-    // Track gravity+mount with a slow low-pass; subtract it to leave motion
-    // acceleration, then re-add +g on z so EskfCore's gravity term cancels and
-    // a_world = Rz(yaw) * motion. Robust to the IMU frame flip and to spikes.
-    grav_lp_ = grav_lp_beta_ * grav_lp_ + (1.0 - grav_lp_beta_) * accel;
+    // Subtract the low-passed gravity to leave motion acceleration, then re-add
+    // +g on z so EskfCore's gravity term cancels and a_world = Rz(yaw) * motion.
+    // Robust to the IMU frame flip and to spikes.
     Eigen::Vector3d motion = accel - grav_lp_;
     if (motion.norm() > accel_clip_) motion = motion.normalized() * accel_clip_;
     accel_eff = motion + Eigen::Vector3d(0.0, 0.0, kGravity);
@@ -494,15 +529,129 @@ void EskfNode::gpsCallback(const sensor_msgs::msg::NavSatFix::SharedPtr msg) {
   }
 
   if (!gps_datum_set_) {
-    lat0_ = msg->latitude;
-    lon0_ = msg->longitude;
+    // Average the first N fixes rather than trusting one. The datum defines the
+    // ENU origin, so its noise becomes a CONSTANT offset on every reported
+    // position — the one GPS error no amount of later fusion can average away.
+    lat_sum_ += msg->latitude;
+    lon_sum_ += msg->longitude;
+    if (++gps_datum_count_ < gps_datum_samples_) return;
+    lat0_ = lat_sum_ / gps_datum_count_;
+    lon0_ = lon_sum_ / gps_datum_count_;
     gps_datum_set_ = true;
-    RCLCPP_INFO(get_logger(), "GPS datum set: lat=%.7f lon=%.7f", lat0_, lon0_);
-    return;  // datum maps to ENU origin; nothing to correct on the first fix
+    RCLCPP_INFO(get_logger(),
+                "GPS datum set from %d fixes: lat=%.7f lon=%.7f",
+                gps_datum_count_, lat0_, lon0_);
+    return;  // datum maps to ENU origin; nothing to correct on the datum fixes
   }
   double east, north;
   gpsToEnu(msg->latitude, msg->longitude, east, north);
   eskf_->correctGps(Eigen::Vector2d(east, north), R_gps_);
+}
+
+void EskfNode::magCallback(const sensor_msgs::msg::MagneticField::SharedPtr msg) {
+  RCLCPP_INFO_ONCE(get_logger(),
+      "First magnetometer sample received: |B|=%.3e — heading corrections "
+      "start after %d reference samples.",
+      std::sqrt(msg->magnetic_field.x * msg->magnetic_field.x +
+                msg->magnetic_field.y * msg->magnetic_field.y +
+                msg->magnetic_field.z * msg->magnetic_field.z),
+      mag_ref_samples_);
+  if (!initialized_ || !have_grav_lp_) return;
+  ++n_mag_msgs_;
+
+  const Eigen::Vector3d B(msg->magnetic_field.x, msg->magnetic_field.y,
+                          msg->magnetic_field.z);
+  const double norm = B.norm();
+  // Heading of the body relative to the field's horizontal direction.
+  double rel = 0.0;
+  if (!EskfCore::magHeading(B, grav_lp_, 0.0, &rel)) return;
+
+  if (!mag_ref_set_) {
+    // Circular mean, not an arithmetic one: the offsets may straddle +-pi.
+    if (mag_calibrate_heading_) {
+      const double off = eskf_->state()(PSI) - rel;
+      mag_ref_c_ += std::cos(off);
+      mag_ref_s_ += std::sin(off);
+    }
+    mag_norm_sum_ += norm;
+    if (++mag_ref_count_ < mag_ref_samples_) return;
+    if (mag_calibrate_heading_) {
+      mag_field_heading_ = std::atan2(mag_ref_s_, mag_ref_c_);
+    }
+    mag_ref_norm_ = mag_norm_sum_ / mag_ref_count_;
+    mag_ref_set_ = true;
+    RCLCPP_INFO(get_logger(),
+                "magnetometer reference set from %d samples: field heading "
+                "%.4f rad (%s), |B| %.3e",
+                mag_ref_count_, mag_field_heading_,
+                mag_calibrate_heading_ ? "calibrated against initial yaw"
+                                       : "from mag_field_heading",
+                mag_ref_norm_);
+    return;
+  }
+
+  const double psi_meas = EskfCore::wrapAngle(mag_field_heading_ + rel);
+  std_msgs::msg::Float64 hm;
+  hm.data = psi_meas;
+  mag_heading_pub_->publish(hm);
+
+  // A field whose strength has moved off the reference is being distorted
+  // (motors, steel, rebar) — and a distorted field points the wrong way too.
+  if (mag_norm_gate_ > 0.0 && mag_ref_norm_ > 0.0 &&
+      std::abs(norm - mag_ref_norm_) > mag_norm_gate_ * mag_ref_norm_) {
+    ++n_mag_norm_rejected_;
+    return;
+  }
+  // Rate-limit: consecutive headings share the tilt estimate's error, so
+  // fusing every sample at a white-noise R would be over-confident.
+  const rclcpp::Time stamp(msg->header.stamp);
+  if (have_mag_fused_ &&
+      (stamp - last_mag_fuse_time_).seconds() < mag_min_interval_) {
+    return;
+  }
+  last_mag_fuse_time_ = stamp;
+  have_mag_fused_ = true;
+
+  // Tilt-dependent R: a heading taken while "up" lags the body is worth less.
+  const double tilt_sigma = mag_tilt_gain_ * tilt_hp_.norm();
+  const double r_eff = r_mag_ + tilt_sigma * tilt_sigma;
+
+  // Innovation gate, with a lock-out escape (see the header).
+  if (mag_gate_sigma_ > 0.0) {
+    const double y = EskfCore::wrapAngle(psi_meas - eskf_->state()(PSI));
+    const double s = eskf_->covariance()(PSI, PSI) + r_eff;
+    if (y * y > mag_gate_sigma_ * mag_gate_sigma_ * s) {
+      if (!mag_rejecting_) {
+        mag_rejecting_ = true;
+        mag_reject_start_ = stamp;
+      }
+      if ((stamp - mag_reject_start_).seconds() < mag_gate_reset_sec_) {
+        ++n_mag_gate_rejected_;
+        return;
+      }
+      ++n_mag_gate_forced_;
+      RCLCPP_WARN(get_logger(),
+                  "mag innovation gate rejected every heading for %.1f s "
+                  "(innovation %+.1f deg) — fusing this one to avoid lock-out.",
+                  mag_gate_reset_sec_, y * 180.0 / M_PI);
+    }
+    mag_rejecting_ = false;
+  }
+
+  eskf_->correctYaw(psi_meas, r_eff);
+  ++n_mag_fused_;
+  RCLCPP_INFO_THROTTLE(
+      get_logger(), *get_clock(), 10000,
+      "mag: %lu msgs, %lu fused, %lu gated (%lu forced), %lu rejected by the "
+      "|B| gate | tilt lag %.1f deg -> sigma %.1f deg | mag heading %+.3f rad, "
+      "filter psi %+.3f rad",
+      static_cast<unsigned long>(n_mag_msgs_),
+      static_cast<unsigned long>(n_mag_fused_),
+      static_cast<unsigned long>(n_mag_gate_rejected_),
+      static_cast<unsigned long>(n_mag_gate_forced_),
+      static_cast<unsigned long>(n_mag_norm_rejected_),
+      tilt_hp_.norm() * 180.0 / M_PI, std::sqrt(r_eff) * 180.0 / M_PI,
+      psi_meas, eskf_->state()(PSI));
 }
 
 void EskfNode::groundTruthCallback(const nav_msgs::msg::Odometry::SharedPtr msg) {
