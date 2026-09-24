@@ -320,6 +320,30 @@ MAGNETOMETER.**
 - **Also seen in that render:** the baseline arm's position error peaked at **2.3 m around
   60 s**, the same window as the yaw spikes.
 
+**The slip model retrains after every run (2026-09-24): `scripts/auto_train_slip.py`, called
+from the launcher's `cleanup()`.**
+- **What it does:** archive the run's rows → train a candidate on all OTHER runs → score it and
+  the deployed model on this run (held out) → if not worse, retrain on all runs, C++-check, back
+  up, and replace. Details in CLAUDE.md.
+- **Tested in scratch** (1.3 s for archive-only, 5.8 s to train twice and deploy):
+  - First run: archive only.
+  - Second run: held-out BCE candidate **0.6566** vs deployed **0.6626** (corr +0.527 vs +0.508)
+    → C++ check 6.7e-16 → deployed, with a backup.
+  - `--tol −1` forces the reject path: model unchanged.
+  - 1000 rows with `gt_tilt` 1.2 rad dropped; a 199-row log and a missing log skipped.
+- **Stale-data guard:** the launcher now deletes `run_report/slip_features.csv` at startup
+  (like `outcome.txt`). It was only rewritten when the truth bridge was up, so a teleop run would
+  otherwise have re-archived the previous run's data.
+- **`slip_dataset/` seeded, archive only (no deploy yet):**
+  - the 2026-08-28 `--square --terrain` run: 7889 rows;
+  - the latest `--square --terrain --adapt --mag` run: 6847 rows.
+- **Honest limits:**
+  - BCE on soft labels is the trainer's own objective. A lower held-out BCE says the score
+    tracks leg-odom error better, not that the ESKF localises better; that still needs the
+    in-run A/B.
+  - The gate compares against the deployed model on ONE new run, so run-to-run variance can
+    flip it.
+
 **Gotcha found on the way:** `install/` is a MERGED layout, so `colcon build --packages-select`
 without `--merge-install` refuses — and the cross-validator then silently runs the OLD binary
 (it failed at 1.456 until rebuilt, which is the check doing its job).

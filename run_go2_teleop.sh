@@ -28,6 +28,7 @@
 #   ./run_go2_teleop.sh --stiff            # 3x joint PD gains (ros_control_stiff.yaml)
 #   ./run_go2_teleop.sh --climb            # = --terrain --adapt --stiff
 #   ./run_go2_teleop.sh --no-report        # skip the run_report/ snapshot
+#   ./run_go2_teleop.sh --no-train         # don't retrain the slip model after the run
 #   ./run_go2_teleop.sh --no-slip          # only ONE estimator (no slip-adaptive arm)
 #   ./run_go2_teleop.sh --no-gps           # drop /gps/fix (GPS is fused by DEFAULT)
 #   ./run_go2_teleop.sh --mag              # + magnetometer heading (both arms; off by default)
@@ -111,6 +112,7 @@ SLIP="true"                                  # --no-slip: skip the 2nd (slip-ada
 USE_GPS="true"                               # --no-gps: DROP /gps/fix (see the note at the launch below)
 USE_MAG="false"                              # --mag: fuse the gz magnetometer heading (correctYaw)
 REPORT="true"                                # --no-report to disable the run report
+TRAIN="true"                                 # --no-train: skip the post-run slip-model retrain
 RENDER="nvidia"                              # nvidia | software
 PLOT_INTERVAL="0.1"                          # plot redraw period [s] (10 Hz)
 PLOT_VIEW="10"                               # plot XY half-width [m] (8 for --square)
@@ -148,6 +150,7 @@ while [[ $# -gt 0 ]]; do
     --climb)            TERRAIN="true"; ADAPT="true"; STIFF="true" ;;  # both slope fixes on terrain
     --no-slip)          SLIP="false" ;;       # only the baseline (fixed-R) estimator
     --no-report)        REPORT="false" ;;     # skip the run_report/ snapshot
+    --no-train)         TRAIN="false" ;;      # don't retrain the slip model afterwards
     --software-render)  RENDER="software" ;;
     --light|--lite)     RVIZ="false"; PLOT_INTERVAL="0.2" ;;  # lowest load
     # Both spellings, so it works in a script and by hand.
@@ -309,6 +312,20 @@ cleanup() {
   # which closes the window.
   for pid in "${PIDS[@]}"; do kill -KILL -- "-$pid" 2>/dev/null; done
   pkill -KILL -f teleop_twist_keyboard 2>/dev/null
+  # Retrain the slip model on this run's data, now that every node has stopped and
+  # the log is closed. auto_train_slip.py archives the rows to slip_dataset/,
+  # evaluates a candidate on this run (held out), deploys only if it is not worse,
+  # and appends the verdict to REPORT.md. It never blocks shutdown on failure.
+  if [[ "$TRAIN" == "true" && "$REPORT" == "true" && -s "$REPORT_DIR/slip_features.csv" ]]; then
+    echo "Retraining the slip model on this run (--no-train to skip)..."
+    nice -n 10 python3 "$WS/src/go2_eskf/scripts/auto_train_slip.py" \
+      --run-log "$REPORT_DIR/slip_features.csv" \
+      --dataset "$WS/slip_dataset" \
+      --context "$REPORT_DIR/context.txt" \
+      --report "$REPORT_DIR/REPORT.md" > "$REPORT_DIR/slip_training.log" 2>&1 \
+      || echo "  slip training FAILED — see $REPORT_DIR/slip_training.log"
+    sed -n '/## Slip model training/,$p' "$REPORT_DIR/slip_training.log"
+  fi
   rm -rf "$LOGDIR"
   [[ "$REPORT" == "true" ]] && echo "Run report: $REPORT_DIR/REPORT.md"
   echo "Done."
@@ -331,6 +348,9 @@ if [[ "$REPORT" == "true" ]]; then
   # A previous run's outcome must not be read as this one's — same reason the
   # stale node_logs bug was so misleading.
   rm -f "$REPORT_DIR/outcome.txt"
+  # Same for the slip training log: it is only rewritten when the ground-truth
+  # bridge is up, so a stale one would be archived and trained on as THIS run.
+  rm -f "$REPORT_DIR/slip_features.csv"
   {
     echo "Command line: $0 $ALL_ARGS"
     echo "World: $WORLD_DESC"

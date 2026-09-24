@@ -238,6 +238,17 @@ with a slip-adaptive measurement-covariance model. Replaces CHAMP's stock
   with a provenance header. Ground truth is used for the LABEL only, never fed to the filter.
   `config/slip_model_synthetic.txt` keeps the old never-saw-the-robot weights for A/B.
   Always train on one run and evaluate on others; the rows are a time series.
+- **The slip model now retrains after EVERY run** (2026-09-24, `--no-train` to skip):
+  `run_go2_teleop.sh`'s `cleanup()` calls `scripts/auto_train_slip.py` once every node has
+  stopped. It archives the run's usable rows to `slip_dataset/` (gitignored; rows without truth
+  or with `gt_tilt` > 30°, a new slip-log column, are dropped; runs under 500 rows are skipped),
+  trains a candidate on every OTHER archived run, and scores it and the deployed model on this run
+  (held out, BCE). Only if the candidate is not worse does it retrain on all runs, check the file
+  in C++ (`slip_infer` vs NumPy ≤ 1e-9), back the old weights up to
+  `config/slip_model_history/` (gitignored), and replace `config/slip_model.txt`. The verdict is
+  appended to `REPORT.md`; the full log is `run_report/slip_training.log`. Needs ≥ 2 archived runs
+  (seeded with 2). Only runs with the ground-truth bridge (`--plot`/`--square`) produce data.
+  `config/slip_model.txt` is git-tracked, so it shows as modified after each deploy.
 - **`contact_frac` is a structurally dead feature — measured, not assumed.** It is now
   wired to `/foot_contacts` (optional `champ_msgs` dependency, `find_package(... QUIET)`,
   so the package still builds without the vendored tree). At the instants the slip model

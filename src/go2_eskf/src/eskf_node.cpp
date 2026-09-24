@@ -221,7 +221,7 @@ EskfNode::EskfNode() : rclcpp::Node("eskf_node") {
     slip_log_file_ << "t,cmd_minus_leg_vx,cmd_minus_leg_vy,cmd_minus_gyro_wz,"
                       "leg_speed,joint_vel_mean,joint_vel_max,accel_horiz,"
                       "contact_frac,leg_vx,leg_vy,gyro_wz,cmd_vx,cmd_vy,cmd_wz,"
-                      "have_contacts,gt_vx,gt_vy,gt_wz\n";
+                      "have_contacts,gt_vx,gt_vy,gt_wz,gt_tilt\n";
     RCLCPP_INFO(get_logger(),
                 "Logging slip features%s to %s",
                 gt_topic.empty()
@@ -487,9 +487,10 @@ void EskfNode::logSlipFeatures(const rclcpp::Time& stamp,
   // No truth => no label. Write NaN rather than a zero the trainer could mistake
   // for "leg odometry was perfect here".
   if (have_gt_)
-    slip_log_file_ << gt_vx_ << ',' << gt_vy_ << ',' << gt_wz_ << '\n';
+    slip_log_file_ << gt_vx_ << ',' << gt_vy_ << ',' << gt_wz_ << ','
+                   << gt_tilt_ << '\n';
   else
-    slip_log_file_ << "nan,nan,nan\n";
+    slip_log_file_ << "nan,nan,nan,nan\n";
 }
 
 Eigen::Matrix2d EskfNode::legCovarianceForUpdate(double leg_vx, double leg_vy) {
@@ -661,6 +662,8 @@ void EskfNode::groundTruthCallback(const nav_msgs::msg::Odometry::SharedPtr msg)
   tf2::fromMsg(msg->pose.pose.orientation, q);
   double r, p;
   tf2::Matrix3x3(q).getRPY(r, p, gt_yaw_);
+  gt_tilt_ = std::acos(std::clamp(1.0 - 2.0 * (q.x() * q.x() + q.y() * q.y()),
+                                  -1.0, 1.0));
   // Body-frame twist (nav_msgs/Odometry convention, and what gz's
   // OdometryPublisher emits) — directly comparable to CHAMP's leg-odom twist,
   // which is what makes it usable as the slip label.

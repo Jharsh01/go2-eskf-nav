@@ -74,6 +74,7 @@ install(PROGRAMS
   scripts/slip_reference.py
   scripts/cross_validate_slip.py
   scripts/train_slip_model.py
+  scripts/auto_train_slip.py
   scripts/metrics.py
   scripts/run_benchmark.py
   scripts/plot_trajectory.py

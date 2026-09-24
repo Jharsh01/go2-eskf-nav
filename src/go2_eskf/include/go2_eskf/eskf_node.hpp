@@ -163,6 +163,11 @@ class EskfNode : public rclcpp::Node {
   bool have_gt_ = false;
   double gt_x_ = 0.0, gt_y_ = 0.0, gt_yaw_ = 0.0;
   double gt_vx_ = 0.0, gt_vy_ = 0.0, gt_wz_ = 0.0;
+  // Angle between the base z axis and world up [rad]. Logged with the slip
+  // training rows so auto_train_slip.py can drop a fallen robot's rows: its
+  // feet scrabble, leg odometry is garbage, and that is not the distribution the
+  // model runs on.
+  double gt_tilt_ = 0.0;
 
   // Parameters.
   std::string world_frame_, base_frame_;
