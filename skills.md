@@ -439,6 +439,17 @@ started.**
     - **Run 3, clean:** relaunch with no spurious wait → give up → exit 3 → **no gz left**.
       Both boots stood (tilt 1.2°, 2.1°), and so did run 2's second attempt (2.0°) once the gz
       wait existed.
+**01:16 run (`--square --terrain --adapt --mag`), first real launch with the stand check:**
+- Stand check passed on the first boot (tilt 2.5°); the square completed 4/4 with 0 stumbles;
+  exit 0.
+- Estimator yaw error std **1.82°** / p90 3.11° / max **7.16°** (slip arm 1.87 / 3.22 /
+  5.94°). That is the lowest so far, after 2.91 / 4.6 / 15.3° (23:47) and 2.09 / 3.41 / 8.61°
+  (00:39).
+- Magnetometer std 3.48°.
+- Position ATE mean 0.472 / 0.291 m; final 0.170 / 0.222 m; yaw final 0.2 / 0.1°.
+- Slip model auto-deployed (7 runs, 49561 rows).
+- n = 1 per configuration; the downward yaw trend is consistent but unproven.
+
   - The boot flips (00:31, 00:50, run 1 attempt 2) are therefore partly unexplained. The last
     one coincided with overlapping gz servers; the first two did not, since each was a fresh
     launch.
