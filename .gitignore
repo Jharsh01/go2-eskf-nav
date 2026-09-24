@@ -7,3 +7,7 @@ src.zip
 .vscode/
 __pycache__/
 run_report/
+# slip-model training data archived by auto_train_slip.py after each run, and
+# the weights it replaced
+slip_dataset/
+src/go2_eskf/config/slip_model_history/

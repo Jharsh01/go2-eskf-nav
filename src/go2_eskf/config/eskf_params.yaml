@@ -32,11 +32,16 @@ eskf_node:
                                       # hard to reject spikes at the source.
 
     # --- Sensor switches
-    # GPS OFF: the Gazebo navsat sensor emits ~0.5 deg (~55 km) of position noise
-    # (its <stddev>0.5</stddev> is applied in degrees, not metres — see
-    # docs/DESIGN.md), so fusing it wrecks the estimate. Enable only for a
-    # real/fixed GPS. Position then relies on leg odometry (bounded drift).
-    use_gps: false
+    # GPS ON (2026-09-04): the filter fuses IMU + leg odometry + GPS. The Gazebo
+    # navsat sensor used to emit ~0.5 deg (~55 km) of position noise — its
+    # <stddev>0.5</stddev> was applied in degrees, not metres — which is why this
+    # was off. That unit bug is FIXED in unitree_go2_gazebo.xacro (2026-08-28) and
+    # the noise measured at 0.54 m N/S, 0.49 m E/W on a stationary robot, so GPS is
+    # safe to fuse. It is also the ONLY absolute heading reference in this stack:
+    # with it off, yaw is exactly unobservable and runs open-loop on the gyro (see
+    # docs/DESIGN.md). Set false to fall back to leg odometry alone (unbounded yaw
+    # drift, no global position anchor).
+    use_gps: true
     max_imu_dt: 0.05                  # clamp dt across pauses/dropouts [s]
 
     # --- IMU process noise (continuous-time std-devs)
@@ -49,12 +54,19 @@ eskf_node:
     # per-sample sigma^2 * dt^2. At dt=0.01 that is 100x larger, so accel_noise is
     # divided by 10 to leave Q(v,v) = sa^2*dt = 0.25 per step — numerically identical
     # to the old 50.0 with dt^2, i.e. velocity behaviour is deliberately unchanged.
-    accel_noise: 5.0                  # [m/s^2] large: leg odometry dominates velocity
+    accel_noise: 1.0                  # [m/s^2] large: leg odometry dominates velocity
     gyro_noise: 0.002                 # [rad/s]
     gyro_bias_noise: 0.0001           # [rad/s/sqrt(s)]
     # Fractional yaw-rate SCALE uncertainty — the real heading disturbance here.
-    # MEASURED: wz_gyro/wz_truth = 0.830 and 0.964 during wz=+0.4 turns, i.e. a
-    # 4-17% scale error, integrated open-loop into psi. Q(psi,psi) gets an extra
+    # RE-MEASURED 2026-08-12 over 6 runs / 146k samples: wz_gyro/wz_truth = 0.981
+    # (range 0.976-0.984, corr 0.92) — a 1.9% scale error, NOT the "0.830 and
+    # 0.964" this comment used to claim. That older figure came from regressing
+    # against UNFILTERED ground-truth yaw rate, which carries spikes to 583 rad/s
+    # (see skills.md §0); reject |gt_wz| > 1.5 before using it. 1.9% is only
+    # -0.43 deg/s at a wz=0.4 corner, so the scale error is NOT what drives the
+    # heading drift — the residual integrates as a random walk instead. This
+    # term is kept because it is still the honest way to grow heading uncertainty
+    # while turning, but do not expect it to fix drift. Q(psi,psi) gets an extra
     # (gyro_scale_noise*wz)^2 term so heading goes uncertain exactly while turning
     # and leg odometry's vy residual can correct it. 0 = white-noise only (the old
     # behaviour, which left position error tracking yaw error 1:1).
@@ -105,8 +117,55 @@ eskf_node:
     # ZUPT. It can never on its own promote zeros to a measurement.
     stationary_cmd_eps: 0.01          # |cmd| at/above this => commanding motion
     cmd_vel_stale_sec: 0.5            # older than this => no opinion either way
-    gps_pos_noise: 0.5                # [m]    ~u-blox horizontal
+    gps_pos_noise: 0.5                # [m]    ~u-blox horizontal; matches the
+                                      # navsat sensor's gps_noise_m (see the
+                                      # VENDORED EDIT note in unitree_go2_gazebo.xacro)
+    # The first N fixes are AVERAGED to set the ENU origin instead of taking one.
+    # Datum noise is a constant offset on every position the filter reports, so it
+    # is the one GPS error later fusion cannot average away. At 10 Hz this costs
+    # 1 s of startup and shrinks the offset by sqrt(10).
+    gps_datum_samples: 10
     vz_zero_noise: 0.3                # [m/s]  vz≈0 vertical pseudo-measurement (allows bob)
+
+    # --- Magnetometer heading (2026-09-23). OFF until A/B'd live.
+    # A direct psi measurement (EskfCore::correctYaw) from a tilt-compensated
+    # 3-axis magnetometer — the only heading source independent of velocity. GPS
+    # sees psi only while the robot MOVES (turning in place has v_world = 0, so
+    # its heading pull vanishes in exactly the corners where error enters), and
+    # leg odometry never sees it. The sim sensor is the gz magnetometer on
+    # imu_link (unitree_go2_gazebo.xacro, topic imu/mag); eskf.launch.py
+    # use_mag:=true bridges it and turns this on.
+    use_mag: false
+    mag_topic: "imu/mag"
+    mag_heading_noise: 0.05           # [rad] ~2.9 deg. The field noise alone MEASURED 0.98 deg
+                                      # (0.005 G/axis on the 0.31 G horizontal field); the rest
+                                      # covers tilt error, since "up" is the low-passed
+                                      # accelerometer and the gait rocks the body under it.
+    mag_min_interval: 0.1             # [s] fuse <= 10 Hz: the tilt error is time-correlated
+    # Tilt-dependent R (2026-09-24): sigma^2 = mag_heading_noise^2 + (gain * tilt_lag)^2,
+    # tilt_lag = how far the body's tilt has run ahead of the low-passed "up", from the
+    # gyro. MEASURED on a live terrain square: mag error rms 2.7 -> 8.8 deg as the lag
+    # goes 0-3 -> 10+ deg; least-squares gain 0.60 (and a 2.96 deg floor, which is why
+    # mag_heading_noise stays 0.05). 0 = the old constant R.
+    mag_tilt_gain: 0.60
+    # Innovation gate: skip a heading more than this many sigma from the estimate
+    # (sigma^2 = P_psi + R). The same run's mag spikes reached 19 deg against a 2.9 deg
+    # R. After mag_gate_reset_sec of unbroken rejections one is fused anyway, so a real
+    # heading error cannot lock the magnetometer out. 0 disables the gate.
+    mag_gate_sigma: 3.0
+    mag_gate_reset_sec: 5.0
+    mag_norm_gate: 0.25               # reject samples whose |B| is >25% off the reference
+                                      # (local distortion; 0 disables). Never fires in sim.
+    mag_ref_samples: 50               # averaged at startup for the reference (2.5 s at 20 Hz)
+    # true: the field's world direction is calibrated against the filter's own initial
+    # heading, so the mag reports heading in the filter's frame. Right for the sim (the
+    # robot spawns at yaw 0 in ENU, so the gz field direction never matters). On a
+    # robot that does not start at a known yaw, set false and give the field direction:
+    # mag_field_heading = atan2(B_north, B_east) = pi/2 - declination (east-positive).
+    mag_calibrate_heading: true
+    mag_field_heading: 0.0699         # [rad] used only when mag_calibrate_heading is false.
+                                      # 0.0699 = the gz WMM field at the Go2 worlds' datum,
+                                      # MEASURED 2026-09-23 (see the xacro note).
 
     # --- Phase 3: slip-adaptive leg covariance
     use_slip_model: false             # true -> inflate R_leg by the slip score
@@ -114,6 +173,15 @@ eskf_node:
     slip_lambda: 1.0                  # R_leg <- R_leg * (1 + lambda*slip)^2
     cmd_vel_topic: "cmd_vel"          # commanded body twist (slip feature)
     joint_states_topic: "joint_states"  # joint velocities (slip feature)
+    foot_contacts_topic: "foot_contacts"  # champ_msgs/ContactsStamped (slip feature).
+                                      # MEASURED dead: 0.5 in every sample the model
+                                      # actually sees — see eskf_node.hpp.
+    # Training-data tap. Non-empty -> one CSV row per FUSED leg-odom update with the
+    # eight slip features plus the ground-truth body twist (needs ground_truth_topic),
+    # which train_slip_model.py --runlog turns into labels. Independent of
+    # use_slip_model: the features are sensor-derived, so the baseline arm records
+    # while the slip arm runs whatever model is current. Costs ~2 MB per square run.
+    slip_log_path: ""
 
     # --- Initial covariance (diagonal)
     init_pos_cov: 1.0

@@ -28,7 +28,20 @@
 #   ./run_go2_teleop.sh --stiff            # 3x joint PD gains (ros_control_stiff.yaml)
 #   ./run_go2_teleop.sh --climb            # = --terrain --adapt --stiff
 #   ./run_go2_teleop.sh --no-report        # skip the run_report/ snapshot
+#   ./run_go2_teleop.sh --no-train         # don't retrain the slip model after the run
+#   ./run_go2_teleop.sh --boot-retries 0   # fail fast if the Go2 does not stand (default: 2 relaunches)
 #   ./run_go2_teleop.sh --no-slip          # only ONE estimator (no slip-adaptive arm)
+#   ./run_go2_teleop.sh --no-gps           # drop /gps/fix (GPS is fused by DEFAULT)
+#   ./run_go2_teleop.sh --mag              # + magnetometer heading (both arms; off by default)
+#   ./run_go2_teleop.sh --timeout 600      # failsafe: tear everything down after 600 s
+#   ./run_go2_teleop.sh --square --no-timeout   # opt out of the cap entirely
+#
+# FAILSAFE. --square arms a 300 s wall-clock cap by default, and an autonomous run
+# also shuts itself down once square_test.py prints its drift summary. Both use the
+# same cleanup() as Ctrl-C, so a capped run still writes REPORT.md and node_logs and
+# stays diagnosable. Sized for the 5 m square (~185 s end to end, ~90 s of it boot);
+# a 10 m route takes ~370 s and needs --timeout raised or it will be cut off.
+# Teleop runs are uncapped unless you pass --timeout.
 #
 # TWO estimators run by default: the baseline ESKF (fixed leg covariance,
 # /eskf/odom) and a second instance with the slip-adaptive covariance
@@ -97,30 +110,75 @@ TERRAIN="false"                              # --terrain: uneven heightmap + low
 ADAPT="false"                                # --adapt: slope-adaptive /body_pose posture
 STIFF="false"                                # --stiff: 3x joint PD gains (go2_eskf config)
 SLIP="true"                                  # --no-slip: skip the 2nd (slip-adaptive) ESKF arm
+USE_GPS="true"                               # --no-gps: DROP /gps/fix (see the note at the launch below)
+USE_MAG="false"                              # --mag: fuse the gz magnetometer heading (correctYaw)
 REPORT="true"                                # --no-report to disable the run report
+TRAIN="true"                                 # --no-train: skip the post-run slip-model retrain
 RENDER="nvidia"                              # nvidia | software
 PLOT_INTERVAL="0.1"                          # plot redraw period [s] (10 Hz)
-PLOT_VIEW="10"                               # plot XY half-width [m] (13 for --square)
+PLOT_VIEW="10"                               # plot XY half-width [m] (8 for --square)
+# FAILSAFE: hard wall-clock cap on the whole run, in seconds. 0 = no cap. With
+# --square it defaults to SQUARE_TIMEOUT below, because an autonomous run has a
+# known duration and a stack that outlives it is pure waste: gz keeps a GPU and
+# ~4 cores busy, and a stale square_test node has been measured burning 30% of a
+# core for 45 minutes across five later runs. Teardown on timeout is the SAME
+# path as a normal exit, so a capped run still leaves REPORT.md and node_logs.
+TIMEOUT="0"
+# 5 m square measures ~185 s end to end (~90 s of that is boot to controller
+# ACTIVE). 300 s is ~60% margin. A 10 m route (`-- --side 10`) takes ~370 s and
+# WILL be cut by this default — raise it with --timeout for longer routes.
+SQUARE_TIMEOUT="300"
 
-for arg in "$@"; do
-  case "$arg" in
+# Captured BEFORE parsing: the loop below shifts "$@" away, and REPORT.md's
+# "Command line" row is the only record of what a run was actually asked to do.
+ALL_ARGS="$*"
+ORIG_ARGS=("$@")            # verbatim, for the in-place relaunch after a failed stand-up
+# Boot attempts. A failed stand-up re-execs this script with the same arguments;
+# the attempt number and the history of failures ride along in the environment.
+BOOT_RETRIES="2"            # --boot-retries N: relaunches after a failed stand-up (0 = fail fast)
+BOOT_ATTEMPT="${GO2_BOOT_ATTEMPT:-1}"
+BOOT_HISTORY="${GO2_BOOT_HISTORY:-}"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
     --rviz)             RVIZ="true" ;;
     --no-rviz)          RVIZ="false" ;;   # default; kept for compatibility
     --plot)             PLOT="true" ;;
-    --square)           SQUARE="true"; PLOT="true"; PLOT_VIEW="13" ;;  # autonomous square drift test
+    # Autonomous square drift test. View half-width covers square_test.py's 5 m
+    # square plus room for the estimate to drift off it (drift has reached 13 m).
+    --square)           SQUARE="true"; PLOT="true"; PLOT_VIEW="8" ;;
     --obstacles)        OBSTACLES="true" ;;   # bring the boxes/cylinders back
     --terrain)          TERRAIN="true" ;;     # uneven terrain + low-friction patches (slip model)
     --adapt)            ADAPT="true" ;;       # slope-adaptive body posture (terrain_adapt.py)
     --stiff)            STIFF="true" ;;       # 3x joint PD gains (ros_control_stiff.yaml)
+    --gps)              USE_GPS="true" ;;     # default; kept for compatibility
+    --no-gps)           USE_GPS="false" ;;    # leg odom + IMU only (yaw then unobservable)
+    --mag)              USE_MAG="true" ;;     # magnetometer heading on BOTH estimator arms
     --climb)            TERRAIN="true"; ADAPT="true"; STIFF="true" ;;  # both slope fixes on terrain
     --no-slip)          SLIP="false" ;;       # only the baseline (fixed-R) estimator
     --no-report)        REPORT="false" ;;     # skip the run_report/ snapshot
+    --no-train)         TRAIN="false" ;;      # don't retrain the slip model afterwards
+    --boot-retries)     shift; BOOT_RETRIES="${1:-}" ;;
+    --boot-retries=*)   BOOT_RETRIES="${1#*=}" ;;
     --software-render)  RENDER="software" ;;
     --light|--lite)     RVIZ="false"; PLOT_INTERVAL="0.2" ;;  # lowest load
+    # Both spellings, so it works in a script and by hand.
+    --timeout)          shift; TIMEOUT="${1:-}" ;;
+    --timeout=*)        TIMEOUT="${1#*=}" ;;
+    --no-timeout)       TIMEOUT="0"; SQUARE_TIMEOUT="0" ;;  # opt out of the cap
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) echo "Unknown option: $arg" >&2; exit 1 ;;
+    *) echo "Unknown option: $1" >&2; exit 1 ;;
   esac
+  shift
 done
+
+[[ "$TIMEOUT" =~ ^[0-9]+$ ]] || {
+  echo "ERROR: --timeout wants whole seconds, got '$TIMEOUT'" >&2; exit 1; }
+# --square arms the cap unless the user set one explicitly (or opted out).
+[[ "$SQUARE" == "true" && "$TIMEOUT" == "0" ]] && TIMEOUT="$SQUARE_TIMEOUT"
+[[ "$BOOT_RETRIES" =~ ^[0-9]+$ ]] || {
+  echo "ERROR: --boot-retries wants a whole number, got '$BOOT_RETRIES'" >&2; exit 1; }
+BOOT_MAX=$(( BOOT_RETRIES + 1 ))
 
 # `nice`/`ionice` prefix for non-realtime helpers (plot, bridges) so the sim and
 # controllers win CPU during the busy boot — that's what was starving the
@@ -232,7 +290,7 @@ SOURCE_ENV="source '$ROS_SETUP' && source '$WS/install/setup.bash'"
 WAIT_READY="echo 'Waiting for ros2_control to activate the leg controller (~30 s)...'; \
   until timeout 5 ros2 control list_controllers 2>/dev/null \
         | grep -q 'joint_group_effort_controller.*active'; do sleep 2; done; \
-  echo 'Leg controller ACTIVE — the Go2 is standing.'"
+  echo 'Leg controller ACTIVE (stand_check.py confirms the Go2 is upright ~15 s later).'"
 LOGDIR="$(mktemp -d /tmp/go2_teleop.XXXXXX)"
 declare -a PIDS=()   # process-group leaders of everything we start in the bg
 
@@ -245,9 +303,9 @@ start_bg() {  # $1 = name, $2 = command
 }
 
 # --- teardown -------------------------------------------------------------
-cleanup() {
-  trap '' INT TERM EXIT   # no re-entry
-  set +e
+# Stop everything this run started and keep its logs. Shared by cleanup() (the real
+# exit) and the in-place relaunch after a failed stand-up, which must not exit.
+teardown() {
   echo; echo "Shutting down the Go2 stack..."
   # FIRST, before anything is signalled: preserve the per-node stdout that $LOGDIR is
   # about to lose. run_report.py mines it for WARN/ERROR lines on its way out, and this
@@ -266,10 +324,42 @@ cleanup() {
   # which closes the window.
   for pid in "${PIDS[@]}"; do kill -KILL -- "-$pid" 2>/dev/null; done
   pkill -KILL -f teleop_twist_keyboard 2>/dev/null
+  # The gz server is NOT reliably in the process groups above: it was seen alive
+  # several seconds after this point more than once, and one outlived its run by an
+  # hour (22:56). Wait for it, then force it — otherwise a relaunch boots a second gz
+  # alongside the dying one, on the same topics.
+  # Anchored: only processes whose command line STARTS with "gz sim". Unanchored,
+  # "gz sim" also matched any shell whose command line merely contained that text,
+  # so teardown waited on (and then SIGKILLed) an unrelated shell.
+  for _ in $(seq 15); do pgrep -f '^gz sim' >/dev/null || break; sleep 1; done
+  if pgrep -f '^gz sim' >/dev/null; then
+    echo "  gz still up after 15 s — killing it."
+    pkill -KILL -f '^gz sim' 2>/dev/null; sleep 1
+  fi
   rm -rf "$LOGDIR"
+}
+
+cleanup() {  # $1 = exit code (default 0)
+  trap '' INT TERM EXIT   # no re-entry
+  set +e
+  teardown
+  # Retrain the slip model on this run's data, now that every node has stopped and
+  # the log is closed. auto_train_slip.py archives the rows to slip_dataset/,
+  # evaluates a candidate on this run (held out), deploys only if it is not worse,
+  # and appends the verdict to REPORT.md. It never blocks shutdown on failure.
+  if [[ "$TRAIN" == "true" && "$REPORT" == "true" && -s "$REPORT_DIR/slip_features.csv" ]]; then
+    echo "Retraining the slip model on this run (--no-train to skip)..."
+    nice -n 10 python3 "$WS/src/go2_eskf/scripts/auto_train_slip.py" \
+      --run-log "$REPORT_DIR/slip_features.csv" \
+      --dataset "$WS/slip_dataset" \
+      --context "$REPORT_DIR/context.txt" \
+      --report "$REPORT_DIR/REPORT.md" > "$REPORT_DIR/slip_training.log" 2>&1 \
+      || echo "  slip training FAILED — see $REPORT_DIR/slip_training.log"
+    sed -n '/## Slip model training/,$p' "$REPORT_DIR/slip_training.log"
+  fi
   [[ "$REPORT" == "true" ]] && echo "Run report: $REPORT_DIR/REPORT.md"
   echo "Done."
-  exit 0
+  exit "${1:-0}"
 }
 trap cleanup INT TERM
 
@@ -285,14 +375,24 @@ echo "Logs      : $LOGDIR"
 REPORT_DIR="$WS/run_report"
 if [[ "$REPORT" == "true" ]]; then
   mkdir -p "$REPORT_DIR"
+  # A previous run's outcome must not be read as this one's — same reason the
+  # stale node_logs bug was so misleading.
+  rm -f "$REPORT_DIR/outcome.txt"
+  # Same for the slip training log: it is only rewritten when the ground-truth
+  # bridge is up, so a stale one would be archived and trained on as THIS run.
+  rm -f "$REPORT_DIR/slip_features.csv"
   {
-    echo "Command line: $0 $*"
+    echo "Command line: $0 $ALL_ARGS"
     echo "World: $WORLD_DESC"
     echo "World file: $WORLD"
     echo "Joint gains: $GAINS_DESC"
     echo "Body-pose adapt: $ADAPT"
     echo "Square test: $SQUARE"
     echo "Slip arm: $SLIP"
+    echo "GPS fused: $USE_GPS"
+    echo "Magnetometer fused: $USE_MAG"
+    echo "Boot attempt: $BOOT_ATTEMPT of $BOOT_MAX${BOOT_HISTORY:+ (earlier: $BOOT_HISTORY)}"
+    echo "Failsafe timeout: $( ((TIMEOUT>0)) && echo "${TIMEOUT}s" || echo "off" )"
     echo "Rendering: $RENDER"
     echo "Gait: $(sed -n 's/^ *\(swing_height\|nominal_height\|stance_duration\|max_linear_velocity_x\) *: *\(.*\)/\1=\2/p' \
              "$WS/install/share/unitree_go2_sim/config/gait/gait.yaml" 2>/dev/null | tr '\n' ' ')"
@@ -307,6 +407,16 @@ echo
 start_bg sim \
   "$RENDER_ENV ros2 launch unitree_go2_sim unitree_go2_launch.py use_sim_time:=true rviz:=$RVIZ world:='$WORLD' $STIFF_ARG"
 SIM_PID=$REPLY
+
+# --- 1a. Stand-up check ---------------------------------------------------
+# The controller going active does NOT mean the robot stood: on 2026-09-24 two of
+# four launches ended on its side / back before any command. stand_check.py waits
+# 15 s of sim time after activation (long enough to catch one that stands and then
+# tips over) and prints STAND_CHECK UPRIGHT|NOT_UPRIGHT; the supervisor acts on it.
+start_bg standcheck \
+  "$WAIT_READY; nice -n 5 python3 '$WS/src/go2_eskf/scripts/stand_check.py' \
+     --ros-args -p use_sim_time:=true -- --settle 15 --max-tilt ${GO2_STAND_MAX_TILT:-45}"
+# (GO2_STAND_MAX_TILT is a TEST hook: -1 fails every stand check, to exercise the relaunch.)
 
 # --- 1b. Slope-adaptive body posture (optional) ---------------------------
 # CHAMP never publishes /body_pose, so its foot plane is fixed in the base frame and
@@ -344,12 +454,28 @@ fi
 # use_slip_model:=true) publishing /eskf_slip/odom. Same node, same inputs, same
 # tuning — only the leg-odometry covariance differs — so the two curves in the
 # plot are a clean A/B of the slip model on one run.
+#
+# When the ground-truth bridge is up (--plot/--square) the ESKF also subscribes to
+# it and taps a slip-model TRAINING SET: run_report/slip_features.csv, one row per
+# fused leg-odom update, labelled offline by (leg odom - truth) velocity error.
+# Ground truth is used for the label only — never fed to the filter.
+ESKF_GT_ARGS=""
+if [[ "$PLOT" == "true" ]]; then
+  ESKF_GT_ARGS="ground_truth_topic:=/ground_truth/odom"
+  [[ "$REPORT" == "true" ]] && \
+    ESKF_GT_ARGS="$ESKF_GT_ARGS slip_log:='$REPORT_DIR/slip_features.csv'"
+fi
 start_bg eskf \
   "$WAIT_READY; \
-   echo 'Starting ESKF (GPS OFF — the sim navsat is broken:'; \
-   echo '  ~0.5 deg / ~55 km position noise, which would wreck the estimate).'; \
+   echo 'Starting ESKF (GPS: $USE_GPS) — fusing IMU + leg odometry + GPS.'; \
+   echo '  The navsat sensor emitted ~0.5 deg / ~55 km of noise until its <stddev>'; \
+   echo '  was corrected from degrees to metres (unitree_go2_gazebo.xacro,'; \
+   echo '  2026-08-28) — it is now ~0.5 m and safe to fuse, so GPS is ON by default.'; \
+   echo '  It is the only absolute HEADING reference here: with it off, yaw is'; \
+   echo '  exactly unobservable and drifts open-loop. Pass --no-gps to drop it.'; \
+   echo 'Magnetometer heading: $USE_MAG  (--mag; raw heading on /eskf/mag_heading)'; \
    echo 'Slip-adaptive second arm: $SLIP  (-> /eskf_slip/odom)'; \
-   ros2 launch go2_eskf eskf.launch.py use_sim_time:=true use_gps:=false slip:=$SLIP"
+   ros2 launch go2_eskf eskf.launch.py use_sim_time:=true use_gps:=$USE_GPS use_mag:=$USE_MAG slip:=$SLIP $ESKF_GT_ARGS"
 ESKF_PID=$REPLY
 
 # --- 4. Live trajectory plot (optional) — start only once the ESKF publishes,
@@ -369,9 +495,11 @@ if [[ "$PLOT" == "true" ]]; then
 fi
 
 # --- 5. Autonomous square drift test (optional, replaces teleop) -----------
-# Waits for the ESKF to publish AND a short gait warm-up, then drives a 10 m
+# Waits for the ESKF to publish AND a short gait warm-up, then drives a 5 m
 # square closed-loop on ground truth. All drift you see in the plot/summary is
-# estimator error, not driving error.
+# estimator error, not driving error. Side comes from square_test.py's --side
+# default (5 m); pass `-- --side 10` there to go back to the old 10 m route, which
+# is the one terrain.sdf's friction patches were laid out for.
 if [[ "$SQUARE" == "true" ]]; then
   start_bg square \
     "until timeout 5 ros2 topic echo /eskf/odom --once >/dev/null 2>&1; do :; done; \
@@ -409,16 +537,74 @@ fi
 
 echo "======================================================================"
 if [[ "$SQUARE" == "true" ]]; then
-  echo " Go2 stack launched — AUTONOMOUS 10 m SQUARE drift test (no teleop)."
+  echo " Go2 stack launched — AUTONOMOUS SQUARE drift test (no teleop)."
   echo "   Watch the SQUARE window for per-corner errors and the final summary."
 else
   echo " Go2 stack launched (one window per component + a TELEOP window)."
   echo "   Drive from the TELEOP window (give it focus): i / j / k / l / , "
 fi
+if (( TIMEOUT > 0 )); then
+  echo " Failsafe   : shutting everything down after ${TIMEOUT}s if the run has not finished."
+else
+  echo " Failsafe   : OFF (no time cap) — Ctrl-C is the only way out."
+fi
 echo
 echo " >>> Press Ctrl-C IN THIS SHELL to shut EVERYTHING down. <<<"
 echo "======================================================================"
 
-# Block until Ctrl-C (trap -> cleanup). If a bg component exits on its own,
-# keep waiting for the rest; the user tears down explicitly.
-while true; do sleep 3600 & wait $!; done
+# --- supervisor loop -------------------------------------------------------
+# Ctrl-C still works throughout (trap -> cleanup); this only adds two automatic
+# exits so a run cannot outlive its usefulness:
+#
+#   1. DONE     — the square printed its drift summary. Nothing further happens
+#                 in an autonomous run, so holding gz + two ESKF arms + the plot
+#                 open past that point just burns a GPU and four cores.
+#   2. FAILSAFE — the wall-clock cap (--timeout) expired. This is the case that
+#                 matters when a run wedges: gz segfaults, ros2_control never
+#                 activates, or CHAMP falls somewhere the stall detector cannot
+#                 see it. Without it the stack sits there indefinitely.
+#
+# Both call the SAME cleanup(), so a failsafe teardown still copies node_logs and
+# lets run_report.py write its final REPORT.md — a timed-out run stays
+# diagnosable instead of vanishing. The outcome is recorded for the report first.
+# `sleep 5 & wait $!` (not a bare sleep) so Ctrl-C is handled immediately.
+DEADLINE=$(( $(date +%s) + TIMEOUT ))
+note_outcome() {  # $1 = one-line outcome for REPORT.md
+  echo "$1"
+  [[ "$REPORT" == "true" ]] && echo "$1" > "$REPORT_DIR/outcome.txt"
+}
+STAND_SEEN="false"
+while true; do
+  sleep 5 & wait $!
+  # Failed stand-up: relaunch in place (same PID, so Ctrl-C / kill -TERM keep working),
+  # or give up once the attempts are spent.
+  if [[ "$STAND_SEEN" == "false" ]]; then
+    STAND_LINE=$(grep -m1 "^STAND_CHECK" "$LOGDIR/standcheck.log" 2>/dev/null)
+    if [[ "$STAND_LINE" == *" UPRIGHT"* ]]; then
+      echo "Stand check: ${STAND_LINE#STAND_CHECK } — the Go2 is standing."
+      STAND_SEEN="true"
+    elif [[ "$STAND_LINE" == *"NOT_UPRIGHT"* ]]; then
+      TILT="${STAND_LINE##*tilt=}"
+      if (( BOOT_ATTEMPT < BOOT_MAX )); then
+        note_outcome "Run outcome: **FAILED TO STAND** (tilt $TILT) on boot attempt $BOOT_ATTEMPT of $BOOT_MAX — relaunching."
+        teardown
+        export GO2_BOOT_ATTEMPT=$(( BOOT_ATTEMPT + 1 ))
+        export GO2_BOOT_HISTORY="${BOOT_HISTORY:+$BOOT_HISTORY; }attempt $BOOT_ATTEMPT tilt $TILT"
+        echo "Relaunching (attempt $GO2_BOOT_ATTEMPT of $BOOT_MAX)..."
+        exec "$WS/$(basename "$0")" "${ORIG_ARGS[@]}"
+      fi
+      note_outcome "Run outcome: **FAILED TO STAND** (tilt $TILT) on all $BOOT_MAX boot attempt(s) — giving up."
+      cleanup 3
+    fi
+  fi
+  if [[ "$SQUARE" == "true" ]] && \
+     grep -q "SQUARE DRIFT SUMMARY" "$LOGDIR/square.log" 2>/dev/null; then
+    sleep 5 & wait $!          # let run_report catch the last samples
+    note_outcome "Run outcome: square test COMPLETE — shutting down."
+    cleanup
+  fi
+  if (( TIMEOUT > 0 )) && (( $(date +%s) >= DEADLINE )); then
+    note_outcome "Run outcome: **FAILSAFE TIMEOUT** after ${TIMEOUT}s — the run did not finish in time; shutting down."
+    cleanup
+  fi
+done

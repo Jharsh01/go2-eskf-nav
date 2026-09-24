@@ -1,6 +1,8 @@
 // eskf_node.cpp
 #include "go2_eskf/eskf_node.hpp"
 
+#include <algorithm>
+#include <cstdint>
 #include <cmath>
 
 #include <geometry_msgs/msg/transform_stamped.hpp>
@@ -98,6 +100,30 @@ EskfNode::EskfNode() : rclcpp::Node("eskf_node") {
   const auto slip_model_path = declare_parameter<std::string>("slip_model_path", "");
   const auto cmd_vel_topic = declare_parameter<std::string>("cmd_vel_topic", "cmd_vel");
   const auto joint_topic = declare_parameter<std::string>("joint_states_topic", "joint_states");
+  const auto contacts_topic =
+      declare_parameter<std::string>("foot_contacts_topic", "foot_contacts");
+  // Training-data tap: one CSV row of slip features per fused leg-odom update.
+  // Independent of use_slip_model_ — the features are all sensor-derived, so the
+  // BASELINE arm can record a training set while the slip arm is still running
+  // whatever model exists today.
+  gps_datum_samples_ = static_cast<int>(
+      std::max<int64_t>(1, declare_parameter<int>("gps_datum_samples", 10)));
+  const auto slip_log_path = declare_parameter<std::string>("slip_log_path", "");
+
+  // --- Magnetometer heading (see the header for the reference/gate design)
+  use_mag_ = declare_parameter<bool>("use_mag", false);
+  const auto mag_topic = declare_parameter<std::string>("mag_topic", "imu/mag");
+  const double mag_std = declare_parameter<double>("mag_heading_noise", 0.05);
+  r_mag_ = mag_std * mag_std;
+  mag_min_interval_ = declare_parameter<double>("mag_min_interval", 0.1);
+  mag_tilt_gain_ = declare_parameter<double>("mag_tilt_gain", 0.60);
+  mag_gate_sigma_ = declare_parameter<double>("mag_gate_sigma", 3.0);
+  mag_gate_reset_sec_ = declare_parameter<double>("mag_gate_reset_sec", 5.0);
+  mag_norm_gate_ = declare_parameter<double>("mag_norm_gate", 0.25);
+  mag_ref_samples_ = static_cast<int>(
+      std::max<int64_t>(1, declare_parameter<int>("mag_ref_samples", 50)));
+  mag_calibrate_heading_ = declare_parameter<bool>("mag_calibrate_heading", true);
+  mag_field_heading_ = declare_parameter<double>("mag_field_heading", 0.0699);
   if (use_slip_model_) {
     if (slip_model_path.empty()) {
       RCLCPP_WARN(get_logger(),
@@ -129,6 +155,13 @@ EskfNode::EskfNode() : rclcpp::Node("eskf_node") {
         gps_topic, rclcpp::SensorDataQoS(),
         std::bind(&EskfNode::gpsCallback, this, std::placeholders::_1));
   }
+  if (use_mag_) {
+    mag_sub_ = create_subscription<sensor_msgs::msg::MagneticField>(
+        mag_topic, rclcpp::SensorDataQoS(),
+        std::bind(&EskfNode::magCallback, this, std::placeholders::_1));
+    mag_heading_pub_ =
+        create_publisher<std_msgs::msg::Float64>("eskf/mag_heading", 10);
+  }
   if (!gt_topic.empty()) {
     gt_sub_ = create_subscription<nav_msgs::msg::Odometry>(
         gt_topic, 10,
@@ -140,11 +173,31 @@ EskfNode::EskfNode() : rclcpp::Node("eskf_node") {
   cmd_vel_sub_ = create_subscription<geometry_msgs::msg::Twist>(
       cmd_vel_topic, 10,
       std::bind(&EskfNode::cmdVelCallback, this, std::placeholders::_1));
-  if (use_slip_model_) {
+  // The slip features are needed for inference AND for recording a training set,
+  // so subscribe whenever either is on.
+  const bool need_slip_features = use_slip_model_ || !slip_log_path.empty();
+  if (need_slip_features) {
     joint_state_sub_ = create_subscription<sensor_msgs::msg::JointState>(
         joint_topic, rclcpp::SensorDataQoS(),
         std::bind(&EskfNode::jointStateCallback, this, std::placeholders::_1));
-    slip_pub_ = create_publisher<std_msgs::msg::Float64>("eskf/slip", 10);
+#ifdef GO2_ESKF_HAS_CHAMP_MSGS
+    contacts_sub_ = create_subscription<champ_msgs::msg::ContactsStamped>(
+        contacts_topic, rclcpp::SensorDataQoS(),
+        std::bind(&EskfNode::contactsCallback, this, std::placeholders::_1));
+#else
+    RCLCPP_WARN(get_logger(),
+                "built without champ_msgs: /%s is not subscribed, so the slip "
+                "model's contact_frac feature stays at 1.0.",
+                contacts_topic.c_str());
+#endif
+  }
+  if (use_slip_model_) {
+    // "slip_score", not "slip": this is a Float64 diagnostic in [0,1], NOT the
+    // slip arm's odometry. The old name sat one character away from the slip
+    // ARM's namespace (/eskf_slip/odom) and was repeatedly read as if it were
+    // the second trajectory. It is not — plot_trajectory.py's third curve comes
+    // from /eskf_slip/odom; this topic only feeds REPORT.md's slip-score line.
+    slip_pub_ = create_publisher<std_msgs::msg::Float64>("eskf/slip_score", 10);
   }
   odom_pub_ = create_publisher<nav_msgs::msg::Odometry>(out_topic, 10);
   gyro_bias_pub_ = create_publisher<std_msgs::msg::Float64>("eskf/gyro_bias", 10);
@@ -160,10 +213,28 @@ EskfNode::EskfNode() : rclcpp::Node("eskf_node") {
                 log_path.c_str());
   }
 
+  if (!slip_log_path.empty()) {
+    slip_log_file_.open(slip_log_path);
+    // Feature columns first, in slip_feat:: order, so the file is readable by
+    // scripts/slip_reference.py's SLIP_FEATURES directly; then the raw inputs and
+    // the ground-truth twist that the trainer needs to build the label.
+    slip_log_file_ << "t,cmd_minus_leg_vx,cmd_minus_leg_vy,cmd_minus_gyro_wz,"
+                      "leg_speed,joint_vel_mean,joint_vel_max,accel_horiz,"
+                      "contact_frac,leg_vx,leg_vy,gyro_wz,cmd_vx,cmd_vy,cmd_wz,"
+                      "have_contacts,gt_vx,gt_vy,gt_wz,gt_tilt\n";
+    RCLCPP_INFO(get_logger(),
+                "Logging slip features%s to %s",
+                gt_topic.empty()
+                    ? " (NO ground_truth_topic set — rows will have no label)"
+                    : "",
+                slip_log_path.c_str());
+  }
+
   RCLCPP_INFO(get_logger(),
-              "go2_eskf node up. IMU=%s leg=%s gps=%s(%s) -> %s",
+              "go2_eskf node up. IMU=%s leg=%s gps=%s(%s) mag=%s(%s) -> %s",
               imu_topic.c_str(), leg_topic.c_str(), gps_topic.c_str(),
-              use_gps_ ? "on" : "off", out_topic.c_str());
+              use_gps_ ? "on" : "off", mag_topic.c_str(),
+              use_mag_ ? "on" : "off", out_topic.c_str());
 }
 
 void EskfNode::imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg) {
@@ -198,11 +269,19 @@ void EskfNode::imuCallback(const sensor_msgs::msg::Imu::SharedPtr msg) {
   // Resolve the effective acceleration and attitude fed to the filter. roll_/
   // pitch_ are only used to cancel gravity (and to label the output odom).
   Eigen::Vector3d accel_eff = accel;
+  // Track gravity+mount with a slow low-pass. Updated for EVERY attitude source:
+  // besides gravity_lp's motion extraction below, it is the magnetometer's "up"
+  // vector (in the IMU's own frame, so the frame flip is irrelevant there too).
+  grav_lp_ = grav_lp_beta_ * grav_lp_ + (1.0 - grav_lp_beta_) * accel;
+  // How far the real tilt has run ahead of grav_lp_: the same first-order filter's
+  // high-pass, driven by the gyro's roll/pitch rates (see the header).
+  tilt_hp_ = grav_lp_beta_ *
+             (tilt_hp_ + Eigen::Vector2d(msg->angular_velocity.x,
+                                         msg->angular_velocity.y) * dt);
   if (attitude_source_ == "gravity_lp") {
-    // Track gravity+mount with a slow low-pass; subtract it to leave motion
-    // acceleration, then re-add +g on z so EskfCore's gravity term cancels and
-    // a_world = Rz(yaw) * motion. Robust to the IMU frame flip and to spikes.
-    grav_lp_ = grav_lp_beta_ * grav_lp_ + (1.0 - grav_lp_beta_) * accel;
+    // Subtract the low-passed gravity to leave motion acceleration, then re-add
+    // +g on z so EskfCore's gravity term cancels and a_world = Rz(yaw) * motion.
+    // Robust to the IMU frame flip and to spikes.
     Eigen::Vector3d motion = accel - grav_lp_;
     if (motion.norm() > accel_clip_) motion = motion.normalized() * accel_clip_;
     accel_eff = motion + Eigen::Vector3d(0.0, 0.0, kGravity);
@@ -282,6 +361,12 @@ void EskfNode::legOdomCallback(const nav_msgs::msg::Odometry::SharedPtr msg) {
     const double vx = msg->twist.twist.linear.x * leg_odom_scale_;
     const double vy = msg->twist.twist.linear.y * leg_odom_scale_;
     const Eigen::Vector2d v_body(vx, vy);
+    // Record training data at exactly the point where R_leg is chosen, so the
+    // logged distribution is the inference distribution: post-scale, post-gate,
+    // ZUPT samples excluded (those use R_zupt_, not the slip model).
+    if (slip_log_file_.is_open() && !zupt) {
+      logSlipFeatures(stamp, currentSlipFeatures(vx, vy));
+    }
     const Eigen::Matrix2d R = zupt ? R_zupt_ : legCovarianceForUpdate(vx, vy);
     eskf_->correctLegOdom(v_body, R);
     // Leg yaw rate is bias-free, so (gyro - leg) observes the gyro bias directly —
@@ -362,9 +447,19 @@ void EskfNode::jointStateCallback(
   joint_vel_max_ = mx;
 }
 
-Eigen::Matrix2d EskfNode::legCovarianceForUpdate(double leg_vx, double leg_vy) {
-  if (!use_slip_model_ || !slip_model_.loaded()) return R_leg_;
+#ifdef GO2_ESKF_HAS_CHAMP_MSGS
+void EskfNode::contactsCallback(
+    const champ_msgs::msg::ContactsStamped::SharedPtr msg) {
+  if (msg->contacts.empty()) return;
+  size_t n = 0;
+  for (bool c : msg->contacts) n += c ? 1u : 0u;
+  contact_frac_ = static_cast<double>(n) /
+                  static_cast<double>(msg->contacts.size());
+  have_contacts_ = true;
+}
+#endif
 
+SlipFeatures EskfNode::currentSlipFeatures(double leg_vx, double leg_vy) const {
   SlipFeatures feat;
   feat.cmd_vx = cmd_vx_;
   feat.cmd_vy = cmd_vy_;
@@ -376,6 +471,32 @@ Eigen::Matrix2d EskfNode::legCovarianceForUpdate(double leg_vx, double leg_vy) {
   feat.joint_vel_max = joint_vel_max_;
   feat.accel_horiz = accel_horiz_;
   feat.contact_frac = contact_frac_;
+  return feat;
+}
+
+void EskfNode::logSlipFeatures(const rclcpp::Time& stamp,
+                               const SlipFeatures& feat) {
+  if (!slip_log_file_.is_open()) return;
+  const Eigen::VectorXd f = feat.toVector();
+  slip_log_file_ << stamp.seconds();
+  for (int i = 0; i < f.size(); ++i) slip_log_file_ << ',' << f(i);
+  slip_log_file_ << ',' << feat.leg_vx << ',' << feat.leg_vy << ','
+                 << feat.gyro_wz << ',' << feat.cmd_vx << ',' << feat.cmd_vy
+                 << ',' << feat.cmd_wz << ',' << (have_contacts_ ? 1 : 0)
+                 << ',';
+  // No truth => no label. Write NaN rather than a zero the trainer could mistake
+  // for "leg odometry was perfect here".
+  if (have_gt_)
+    slip_log_file_ << gt_vx_ << ',' << gt_vy_ << ',' << gt_wz_ << ','
+                   << gt_tilt_ << '\n';
+  else
+    slip_log_file_ << "nan,nan,nan,nan\n";
+}
+
+Eigen::Matrix2d EskfNode::legCovarianceForUpdate(double leg_vx, double leg_vy) {
+  if (!use_slip_model_ || !slip_model_.loaded()) return R_leg_;
+
+  const SlipFeatures feat = currentSlipFeatures(leg_vx, leg_vy);
 
   try {
     last_slip_ = slip_model_.predict(feat);
@@ -409,15 +530,129 @@ void EskfNode::gpsCallback(const sensor_msgs::msg::NavSatFix::SharedPtr msg) {
   }
 
   if (!gps_datum_set_) {
-    lat0_ = msg->latitude;
-    lon0_ = msg->longitude;
+    // Average the first N fixes rather than trusting one. The datum defines the
+    // ENU origin, so its noise becomes a CONSTANT offset on every reported
+    // position — the one GPS error no amount of later fusion can average away.
+    lat_sum_ += msg->latitude;
+    lon_sum_ += msg->longitude;
+    if (++gps_datum_count_ < gps_datum_samples_) return;
+    lat0_ = lat_sum_ / gps_datum_count_;
+    lon0_ = lon_sum_ / gps_datum_count_;
     gps_datum_set_ = true;
-    RCLCPP_INFO(get_logger(), "GPS datum set: lat=%.7f lon=%.7f", lat0_, lon0_);
-    return;  // datum maps to ENU origin; nothing to correct on the first fix
+    RCLCPP_INFO(get_logger(),
+                "GPS datum set from %d fixes: lat=%.7f lon=%.7f",
+                gps_datum_count_, lat0_, lon0_);
+    return;  // datum maps to ENU origin; nothing to correct on the datum fixes
   }
   double east, north;
   gpsToEnu(msg->latitude, msg->longitude, east, north);
   eskf_->correctGps(Eigen::Vector2d(east, north), R_gps_);
+}
+
+void EskfNode::magCallback(const sensor_msgs::msg::MagneticField::SharedPtr msg) {
+  RCLCPP_INFO_ONCE(get_logger(),
+      "First magnetometer sample received: |B|=%.3e — heading corrections "
+      "start after %d reference samples.",
+      std::sqrt(msg->magnetic_field.x * msg->magnetic_field.x +
+                msg->magnetic_field.y * msg->magnetic_field.y +
+                msg->magnetic_field.z * msg->magnetic_field.z),
+      mag_ref_samples_);
+  if (!initialized_ || !have_grav_lp_) return;
+  ++n_mag_msgs_;
+
+  const Eigen::Vector3d B(msg->magnetic_field.x, msg->magnetic_field.y,
+                          msg->magnetic_field.z);
+  const double norm = B.norm();
+  // Heading of the body relative to the field's horizontal direction.
+  double rel = 0.0;
+  if (!EskfCore::magHeading(B, grav_lp_, 0.0, &rel)) return;
+
+  if (!mag_ref_set_) {
+    // Circular mean, not an arithmetic one: the offsets may straddle +-pi.
+    if (mag_calibrate_heading_) {
+      const double off = eskf_->state()(PSI) - rel;
+      mag_ref_c_ += std::cos(off);
+      mag_ref_s_ += std::sin(off);
+    }
+    mag_norm_sum_ += norm;
+    if (++mag_ref_count_ < mag_ref_samples_) return;
+    if (mag_calibrate_heading_) {
+      mag_field_heading_ = std::atan2(mag_ref_s_, mag_ref_c_);
+    }
+    mag_ref_norm_ = mag_norm_sum_ / mag_ref_count_;
+    mag_ref_set_ = true;
+    RCLCPP_INFO(get_logger(),
+                "magnetometer reference set from %d samples: field heading "
+                "%.4f rad (%s), |B| %.3e",
+                mag_ref_count_, mag_field_heading_,
+                mag_calibrate_heading_ ? "calibrated against initial yaw"
+                                       : "from mag_field_heading",
+                mag_ref_norm_);
+    return;
+  }
+
+  const double psi_meas = EskfCore::wrapAngle(mag_field_heading_ + rel);
+  std_msgs::msg::Float64 hm;
+  hm.data = psi_meas;
+  mag_heading_pub_->publish(hm);
+
+  // A field whose strength has moved off the reference is being distorted
+  // (motors, steel, rebar) — and a distorted field points the wrong way too.
+  if (mag_norm_gate_ > 0.0 && mag_ref_norm_ > 0.0 &&
+      std::abs(norm - mag_ref_norm_) > mag_norm_gate_ * mag_ref_norm_) {
+    ++n_mag_norm_rejected_;
+    return;
+  }
+  // Rate-limit: consecutive headings share the tilt estimate's error, so
+  // fusing every sample at a white-noise R would be over-confident.
+  const rclcpp::Time stamp(msg->header.stamp);
+  if (have_mag_fused_ &&
+      (stamp - last_mag_fuse_time_).seconds() < mag_min_interval_) {
+    return;
+  }
+  last_mag_fuse_time_ = stamp;
+  have_mag_fused_ = true;
+
+  // Tilt-dependent R: a heading taken while "up" lags the body is worth less.
+  const double tilt_sigma = mag_tilt_gain_ * tilt_hp_.norm();
+  const double r_eff = r_mag_ + tilt_sigma * tilt_sigma;
+
+  // Innovation gate, with a lock-out escape (see the header).
+  if (mag_gate_sigma_ > 0.0) {
+    const double y = EskfCore::wrapAngle(psi_meas - eskf_->state()(PSI));
+    const double s = eskf_->covariance()(PSI, PSI) + r_eff;
+    if (y * y > mag_gate_sigma_ * mag_gate_sigma_ * s) {
+      if (!mag_rejecting_) {
+        mag_rejecting_ = true;
+        mag_reject_start_ = stamp;
+      }
+      if ((stamp - mag_reject_start_).seconds() < mag_gate_reset_sec_) {
+        ++n_mag_gate_rejected_;
+        return;
+      }
+      ++n_mag_gate_forced_;
+      RCLCPP_WARN(get_logger(),
+                  "mag innovation gate rejected every heading for %.1f s "
+                  "(innovation %+.1f deg) — fusing this one to avoid lock-out.",
+                  mag_gate_reset_sec_, y * 180.0 / M_PI);
+    }
+    mag_rejecting_ = false;
+  }
+
+  eskf_->correctYaw(psi_meas, r_eff);
+  ++n_mag_fused_;
+  RCLCPP_INFO_THROTTLE(
+      get_logger(), *get_clock(), 10000,
+      "mag: %lu msgs, %lu fused, %lu gated (%lu forced), %lu rejected by the "
+      "|B| gate | tilt lag %.1f deg -> sigma %.1f deg | mag heading %+.3f rad, "
+      "filter psi %+.3f rad",
+      static_cast<unsigned long>(n_mag_msgs_),
+      static_cast<unsigned long>(n_mag_fused_),
+      static_cast<unsigned long>(n_mag_gate_rejected_),
+      static_cast<unsigned long>(n_mag_gate_forced_),
+      static_cast<unsigned long>(n_mag_norm_rejected_),
+      tilt_hp_.norm() * 180.0 / M_PI, std::sqrt(r_eff) * 180.0 / M_PI,
+      psi_meas, eskf_->state()(PSI));
 }
 
 void EskfNode::groundTruthCallback(const nav_msgs::msg::Odometry::SharedPtr msg) {
@@ -427,6 +662,14 @@ void EskfNode::groundTruthCallback(const nav_msgs::msg::Odometry::SharedPtr msg)
   tf2::fromMsg(msg->pose.pose.orientation, q);
   double r, p;
   tf2::Matrix3x3(q).getRPY(r, p, gt_yaw_);
+  gt_tilt_ = std::acos(std::clamp(1.0 - 2.0 * (q.x() * q.x() + q.y() * q.y()),
+                                  -1.0, 1.0));
+  // Body-frame twist (nav_msgs/Odometry convention, and what gz's
+  // OdometryPublisher emits) — directly comparable to CHAMP's leg-odom twist,
+  // which is what makes it usable as the slip label.
+  gt_vx_ = msg->twist.twist.linear.x;
+  gt_vy_ = msg->twist.twist.linear.y;
+  gt_wz_ = msg->twist.twist.angular.z;
   have_gt_ = true;
 }
 

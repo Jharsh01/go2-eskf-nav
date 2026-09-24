@@ -81,11 +81,24 @@ Error-state transition `F = ∂δx_{k+1}/∂δx_k` (non-identity blocks):
 ∂ψ/∂b_g = −dt
 ```
 
-Discrete process noise `Q` from IMU noise densities (`σ_a`, `σ_g`, `σ_bg`):
+Discrete process noise `Q`. `σ_a`, `σ_g`, `σ_bg` are **continuous-time densities**, so
+every term integrates as `σ² dt` — the standard white-noise-acceleration model, including
+the p–v cross-covariance:
 
 ```
-Q_pp = I₃·(¼ σ_a² dt⁴)   Q_vv = I₃·(σ_a² dt²)   Q_ψψ = σ_g² dt²   Q_bb = σ_bg² dt
+Q_pp = I₃·(σ_a² dt³/3)   Q_pv = Q_vp = I₃·(σ_a² dt²/2)   Q_vv = I₃·(σ_a² dt)
+Q_ψψ = (σ_g² + (σ_gs·ω_z)²)·dt                            Q_bb = σ_bg² dt
 ```
+
+The `(σ_gs·ω_z)²` term is deliberate: the dominant yaw-rate error here is a *scale*
+error, not white noise (`ω_gyro/ω_truth` measured **0.981** over 6 runs / 146 k samples —
+an earlier "0.830 and 0.964" was an artifact of unfiltered ground-truth yaw rate, which
+spikes to 583 rad/s; see `skills.md` §0), so
+heading uncertainty grows while turning — which is when the error actually enters.
+
+> Earlier revisions of this file documented `Q_pp = ¼σ_a²dt⁴`, `Q_vv = σ_a²dt²`,
+> `Q_ψψ = σ_g²dt²` — the per-SAMPLE convention, mixed inconsistently with a `dt` bias
+> term and 100× too small for ψ at dt=0.01. See the comment at `eskf_core.cpp:83-90`.
 
 Covariance: `P ← F P Fᵀ + Q`.
 
@@ -109,6 +122,28 @@ inflated when slip is detected, so the filter leans on IMU+GPS instead.
 
 **GPS** — measures world position `[x, y]`: `h = [px, py]`, `H` selects them.
 This is the only globally-anchored sensor; it bounds long-term drift.
+
+**Gyro bias** — leg kinematics estimate yaw rate without a gyro, so the difference
+measures the bias directly: `z = ω_gyro − ω_leg`, `h = b_g`. Only fused below
+0.10 rad/s; above that the residual is a rotation-dependent scale error, not bias.
+
+**Heading (magnetometer, optional, `use_mag`)** — `z = ψ_mag`, `h = ψ`, innovation
+wrapped to (−π, π]. The only update that observes ψ independently of velocity: GPS
+reaches ψ only through `P(v,ψ)` while moving, so it cannot correct heading while
+turning in place — exactly where the yaw error enters. `ψ_mag` comes from
+`EskfCore::magHeading`, a tilt compensation built from vectors (field and low-passed
+accelerometer "up", both in the IMU frame) rather than roll/pitch angles, so the sim
+IMU's flipped frame does not matter. Through `F(ψ,b_g) = −dt` it also makes `b_g`
+observable with no other sensor. Offline (`yaw_observability.py`, 5 m square):
+2.00° → 0.61° mean final yaw with GPS on, 23.4° → 0.61° with GPS off — *if* the
+tilt-induced heading error is ~2°; at 10° it is worse than GPS alone. That error is
+the one number not yet measured live.
+
+**Vertical anchor** — `z = 0`, `h = v_z`. `(pz, vz)` is otherwise unobservable and
+double-integrates to infinity (measured: `pz` reached 1601 m without it).
+
+A full walkthrough of every equation, with the `H` derivation and a flow chart, is in
+the package [`README.md`](../README.md#how-the-estimator-works--physics-flow-and-every-equation).
 
 ---
 
@@ -135,7 +170,7 @@ agreement immediately.
 
 | Phase | Deliverable | Résumé bullet |
 |-------|-------------|---------------|
-| **1 ✅** | ESKF core + 16 unit tests + NumPy cross-validation | #1 |
+| **1 ✅** | ESKF core + 22 unit tests + NumPy cross-validation | #1 |
 | **2 ✅** | ROS node (`eskf_node`): subs `imu/data`, `odom/raw`, `gps/fix`; GPS lat/lon→local ENU; publishes `eskf/odom` (+ optional TF); ground-truth CSV logging | #1 |
 | **3 ✅** | Slip model: PyTorch trainer (+ NumPy fallback) → exported weights → dependency-free Eigen MLP (`slip_model.hpp`) → adaptive `R_leg`; 12 unit tests + C++≡NumPy slip cross-validation (~3e-16) | #2 |
 | **4 ✅** | Benchmark: ATE / RPE / drift metrics with SE(2) alignment; fixed vs adaptive vs GPS-denied scenarios; auto-generated markdown report + plots | #3 |
@@ -179,7 +214,7 @@ the design now handles — each verified on live data via the NumPy twin:
    (`use_gps:=true`) can be enabled. The node ignores the bridged (all-zero)
    `position_covariance` and uses the `gps_pos_noise` parameter instead.
 
-**Validation status:** core math proven by 16 unit tests + C++≡NumPy
+**Validation status:** core math proven by 22 unit tests + C++≡NumPy
 cross-validation (~1e-14); the live-data behaviour (bounded estimate, leg-odom
 dominance) validated by replaying the real sim IMU/leg streams through the
 NumPy twin, which shares the node's algorithm exactly. A standing robot yields
@@ -216,6 +251,28 @@ layer MLP when available, with a NumPy logistic-regression fallback so the
 pipeline runs anywhere. It trains on logged feature/label CSVs (`--data`) or a
 physics-inspired synthetic dataset, and exports the same weights format.
 
+**Where the labels come from (2026-08-12).** The shipped model is no longer
+synthetic. `eskf_node`'s `slip_log_path` writes one row per *fused* leg-odom
+update — the same call site that runs inference, so the training distribution is
+the inference distribution — carrying the eight features plus the ground-truth
+body twist. `--runlog` then labels each row
+
+```
+    s* = clip( |v_leg − v_truth| / label_scale , 0, 1 )        (label_scale = 0.3 m/s)
+```
+
+i.e. *how wrong leg odometry actually was at that instant*. That is exactly the
+quantity `R_leg` is supposed to describe, which makes the target physically
+meaningful rather than a hand-labelled "slip/no-slip" guess: with `λ = 1` the
+inflated standard deviation is `σ_leg·(1 + s)`, so a model that reproduces `s*`
+makes `R_leg` honest. Ground truth is used for the label only and never reaches
+the filter. Measured on terrain (`--terrain`, 13.5 k samples): leg-odom velocity
+error median **0.162 m/s**, p90 0.342 — against a fixed `leg_odom_vel_noise` of
+0.10, i.e. the fixed `R_leg` was ~2.6× too small in variance. A least-squares fit
+gives `v_leg/v_truth = 0.95`, so the residual is **random, not a scale error**:
+the leg-odom *scale* is nearly right on terrain and the slip model's real job
+there is variance, not bias.
+
 **Verification** (the project's signature method): `scripts/slip_reference.py` is
 a line-for-line NumPy twin of the C++ forward pass, and
 `scripts/cross_validate_slip.py` confirms C++ ≡ NumPy slip scores to ~3e-16,
@@ -224,7 +281,7 @@ plus 12 GTest cases in `test/test_slip_model.cpp`.
 **Node integration:** with `use_slip_model:=true` and `slip_model_path` set, the
 node subscribes to `cmd_vel` and `joint_states`, assembles the feature vector
 each leg-odom correction, runs the model, inflates `R_leg`, and republishes the
-score on `eskf/slip`. Live end-to-end validation on slippery terrain needs a sim
+score on `eskf/slip_score`. Live end-to-end validation on slippery terrain needs a sim
 run; the inference math is proven by the cross-validation and unit tests.
 
 ## 8. Phase 4 — benchmark

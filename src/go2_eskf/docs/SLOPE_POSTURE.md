@@ -220,11 +220,27 @@ Roll/pitch cannot come from the sources you would expect: the gz IMU's **orienta
 field is unreliable (`DESIGN.md` — it is why the ESKF defaults to `gravity_lp`), and the
 ESKF's own state is 8-dimensional, carrying **yaw only**. So attitude is recovered from
 gravity, as everywhere else in this stack. At rest an accelerometer reads `+g` expressed in
-the body frame, so a nose-up pitch `θ` gives `f = (−g sin θ, 0, g cos θ)`, hence
+the body frame (the gravity *reaction*, pointing up). Nose-up by `θ` tilts body `+x`
+toward the sky, so `f = (+g sin θ, 0, g cos θ)`, hence
 
 ```
-    pitch = atan2(−f_x, ‖(f_y, f_z)‖)          roll = atan2(f_y, f_z)
+    pitch_up = atan2(+f_x, ‖(f_y, f_z)‖)       roll = atan2(f_y, f_z)
 ```
+
+`pitch_up` is **+nose-up — the opposite of REP-103** (+nose-down, used by ground truth and
+by CHAMP's `/body_pose`). **Corrected 2026-09-23:** this section and `terrain_adapt.py`
+previously had `f = (−g sin θ, …)` / `atan2(−f_x, …)`, which is REP-103 pitch mistaken for
+nose-up. `com_shift_x` therefore shifted the CoM **downhill** on every slope. A gz IMU at a
+known 8.6° nose-up pose reads −8.6° through the old formula (`skills.md` §0). The offline
+"synthetic tilted IMU" check below agreed with the old formula only because it was generated
+from the same wrong model — a self-consistency test, not a sign test.
+
+**Update 2026-09-23 — this is now only the drift correction.** `terrain_adapt.py` defaults to
+`attitude_mode: complementary`: roll/pitch are propagated by the gyro (ZYX Euler kinematics)
+and pulled toward the accelerometer angle above only over `cf_tau` = 10 s. Accel-only
+attitude measured corr +0.25 against truth and read +19° on flat ground at gait start
+(`skills.md` §0). Point 3 below (lag) now refers to the posture's own `tau` low-pass, not
+to attitude estimation. `attitude_mode: accel` restores the accel-only estimator.
 
 Three consequences the implementation has to respect:
 
@@ -295,8 +311,9 @@ And in the joint controller, `config/ros_control_stiff.yaml`:
 | `p` | 100 | **300** | 2.85 cm → 0.95 cm of stance sag (§2) |
 | `d` | 1.0 | **3.5** | `2√(pI)` with `I ≈ 0.01 kg·m²`; stock was under-damped even at p=100 |
 
-**Status: none of this is validated in the live sim.** The geometry and the sign
-conventions are verified offline (a synthetic tilted IMU reproduces the table in §3.1
+**Status: none of this is validated in the live sim.** The pitch SIGN was wrong until
+2026-09-23 (§5) — every `--adapt` run before then had `com_shift_x` pointing downhill, so
+none of them measures this design. The geometry is verified offline (a synthetic tilted IMU reproduces the table in §3.1
 exactly), but whether it gets CHAMP up a real slope is unmeasured. Per `skills.md` §0,
 A/B the arms **one at a time** and budget several runs each — this gait's run-to-run
 variance is large enough to fake any result you like from a single run.

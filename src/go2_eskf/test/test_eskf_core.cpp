@@ -157,6 +157,89 @@ TEST(EskfLegOdom, HigherCovarianceMeansSmallerUpdate) {
   EXPECT_GT(tight.state()(VX), loose.state()(VX));
 }
 
+TEST(EskfYaw, PullsHeadingAndShrinksItsUncertainty) {
+  auto e = makeFresh(1.0);
+  const double before = e.covariance()(PSI, PSI);
+  e.correctYaw(0.4, 0.01);
+  EXPECT_NEAR(e.state()(PSI), 0.4, 0.01);
+  EXPECT_LT(e.covariance()(PSI, PSI), before);
+  EXPECT_TRUE(isPosDef(e.covariance()));
+}
+
+TEST(EskfYaw, InnovationWrapsAcrossThePiSeam) {
+  // psi = 3.1 and a measurement of -3.1 are 0.083 rad apart, not 6.2. An
+  // unwrapped innovation would drag psi through zero the long way round.
+  EskfCore::Config cfg;
+  cfg.initial_state = Vec8::Zero();
+  cfg.initial_state(PSI) = 3.1;
+  cfg.initial_covariance = Mat8::Identity() * 1.0;
+  EskfCore e(cfg);
+  e.correctYaw(-3.1, 0.01);
+  const double moved = EskfCore::wrapAngle(e.state()(PSI) - 3.1);
+  EXPECT_GT(moved, 0.0);                      // went up through +pi...
+  EXPECT_LT(moved, 2 * M_PI - 6.2 + 1e-6);    // ...by at most the short arc
+  EXPECT_NEAR(EskfCore::wrapAngle(e.state()(PSI) + 3.1), 0.0, 0.01);
+}
+
+TEST(EskfYaw, ObservesGyroBiasWithoutAnyOtherSensor) {
+  // A stationary robot with a biased gyro, heading pinned by a magnetometer:
+  // the yaw update must pull b_g onto the bias (via F(PSI,BG) = -dt) — this is
+  // what bounds heading drift with GPS off, which leg odometry alone cannot.
+  auto e = makeFresh(1e-2);
+  const double bias = 0.02;  // [rad/s], ~69 deg of drift per minute
+  for (int k = 0; k < 6000; ++k) {           // 60 s at 100 Hz
+    e.predictImu(kRestAccel, bias, 0, 0, 0.01);
+    if (k % 10 == 0) e.correctYaw(0.0, 0.05 * 0.05);
+  }
+  EXPECT_NEAR(e.state()(BG), bias, 2e-3);
+  EXPECT_NEAR(e.state()(PSI), 0.0, 0.02);
+  EXPECT_TRUE(isPosDef(e.covariance()));
+}
+
+TEST(EskfMag, LevelHeadingMatchesYaw) {
+  const Eigen::Vector3d B_world(5.5645e-6, 22.8758e-6, -42.3884e-6);  // gz default
+  const double field_heading = std::atan2(B_world.y(), B_world.x());
+  for (double yaw : {0.0, 0.7, -2.0, 3.0}) {
+    const Eigen::Matrix3d R = EskfCore::rotBodyToWorld(0, 0, yaw);
+    double psi = 99.0;
+    ASSERT_TRUE(EskfCore::magHeading(R.transpose() * B_world,
+                                     R.transpose() * Eigen::Vector3d::UnitZ(),
+                                     field_heading, &psi));
+    EXPECT_NEAR(EskfCore::wrapAngle(psi - yaw), 0.0, 1e-9) << "yaw " << yaw;
+  }
+}
+
+TEST(EskfMag, TiltCompensatedAndMountIndependent) {
+  // Roll/pitch must not leak into heading — including a sensor mounted upside
+  // down (roll = pi), as the sim IMU's frame appears to be (DESIGN.md §6).
+  const Eigen::Vector3d B_world(5.5645e-6, 22.8758e-6, -42.3884e-6);
+  const double field_heading = std::atan2(B_world.y(), B_world.x());
+  const double cases[][3] = {{0.2, -0.15, 1.0}, {-0.3, 0.25, -2.5},
+                             {M_PI, 0.0, 0.6}, {M_PI, 0.2, -1.2}};
+  for (const auto& c : cases) {
+    const Eigen::Matrix3d R = EskfCore::rotBodyToWorld(c[0], c[1], c[2]);
+    double psi = 99.0;
+    ASSERT_TRUE(EskfCore::magHeading(R.transpose() * B_world,
+                                     R.transpose() * Eigen::Vector3d::UnitZ(),
+                                     field_heading, &psi));
+    EXPECT_NEAR(EskfCore::wrapAngle(psi - c[2]), 0.0, 1e-9)
+        << "roll " << c[0] << " pitch " << c[1] << " yaw " << c[2];
+  }
+}
+
+TEST(EskfMag, RejectsDegenerateGeometry) {
+  double psi = 99.0;
+  // Purely vertical field (at a magnetic pole): no horizontal direction.
+  EXPECT_FALSE(EskfCore::magHeading(Eigen::Vector3d(0, 0, -4e-5),
+                                    Eigen::Vector3d::UnitZ(), 0.0, &psi));
+  // Forward axis pointing straight up: the body has no heading.
+  EXPECT_FALSE(EskfCore::magHeading(Eigen::Vector3d(1e-5, 2e-5, -4e-5),
+                                    Eigen::Vector3d::UnitX(), 0.0, &psi));
+  EXPECT_FALSE(EskfCore::magHeading(Eigen::Vector3d::Zero(),
+                                    Eigen::Vector3d::UnitZ(), 0.0, &psi));
+  EXPECT_EQ(psi, 99.0);  // untouched on failure
+}
+
 // === Utility ===============================================================
 
 TEST(EskfUtil, WrapAngleBounds) {

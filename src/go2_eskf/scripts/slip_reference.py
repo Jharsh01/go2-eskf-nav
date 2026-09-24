@@ -69,9 +69,14 @@ class SlipModel:
         return float(x[0])
 
     # --- file IO -----------------------------------------------------------
-    def save(self, path):
+    def save(self, path, notes=None):
         with open(path, "w") as f:
             f.write("# go2_eskf slip MLP weights\n")
+            # Provenance, so a weights file in config/ can always be traced back
+            # to the data that produced it. '#' lines are comments to both
+            # readers (this one and slip_model.hpp's nextToken).
+            for line in (notes or []):
+                f.write(f"# {line}\n")
             f.write(f"input_dim {self.input_dim}\n")
             f.write("mean " + " ".join(f"{v:.17g}" for v in self.mean) + "\n")
             f.write("std " + " ".join(f"{v:.17g}" for v in self.std) + "\n")
