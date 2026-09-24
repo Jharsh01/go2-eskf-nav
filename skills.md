@@ -344,6 +344,27 @@ from the launcher's `cleanup()`.**
   - The gate compares against the deployed model on ONE new run, so run-to-run variance can
     flip it.
 
+**00:31 run (`--square --terrain --adapt --mag`) — the robot NEVER STOOD. A boot failure; no
+first-party code involved.**
+- **Timeline** (launcher / gz log clock):
+  - entity spawned 258.7 s;
+  - `joint_states_controller` 278.7 s;
+  - `joint_group_effort_controller` activated **289.5 s** — **31 s limp**, which is the vendored
+    launch's spawner timing;
+  - the adapter's first attitude reading at 299.9 s was already at its −20° roll clamp, with
+    |f| ≈ g steady (0 impacts rejected, |accel − cf| 0.1°): lying still on its side.
+- **Ground truth**, once its bridge came up: roll −80° → −94° → settled −89.6°, z 0.162 m, 0.4 m
+  from the spawn point. `square_test` correctly held zero ("never stood").
+- **Nothing first-party was acting on it:** the adapter's roll gains are 0 (identity pose), the
+  ESKF is passive, and `square_test` held zero.
+- **The launcher is where the gap is:** `WAIT_READY` prints "Leg controller ACTIVE — the Go2 is
+  standing." on controller activation alone, never checking the robot actually stood. So a
+  sideways robot boots the whole stack and sits until Ctrl-C or the 300 s cap.
+- The auto-trainer handled it correctly: the slip log was empty (every leg-odom sample was
+  degenerate while lying still), so nothing was archived and the deployed model was unchanged.
+- **Proposed fix:** after activation, confirm the robot is upright from `/imu/data` (gravity
+  direction), then either fail fast with "FAILED TO STAND" or relaunch the sim automatically.
+
 **Gotcha found on the way:** `install/` is a MERGED layout, so `colcon build --packages-select`
 without `--merge-install` refuses — and the cross-validator then silently runs the OLD binary
 (it failed at 1.456 until rebuilt, which is the check doing its job).
